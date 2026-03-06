@@ -37,6 +37,14 @@ import { ShearwaterBle } from './shearwater-ble';
 const _log = (..._args: any[]) => {}; // verbose — disabled
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const _info = (...args: any[]) => console.log('[SW]', ...args); // milestones only
+const _diagnosticsEnabled =
+  typeof globalThis !== 'undefined' &&
+  ((globalThis as Record<string, unknown>).DEBUG_BLE_DIAGNOSTICS === true ||
+    (globalThis as Record<string, unknown>).DEBUG_BLE_DIAGNOSTICS === 'true');
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const _diag = (...args: any[]) => {
+  if (_diagnosticsEnabled) console.error(...args);
+};
 
 export class ShearwaterProtocol {
   private baseAddr = 0;
@@ -233,8 +241,8 @@ export class ShearwaterProtocol {
       { desc: 'base+addr, DIVE_SIZE, compressed',   addr: (this.baseAddr + entry.address) >>> 0,     size: DIVE_SIZE,  comp: 0x10 },
     ];
 
-    console.error('=== DOWNLOAD DIAGNOSTIC ===');
-    console.error(`Entry: dive#${entry.diveNumber}, manifest addr=0x${entry.address.toString(16)}, size=${entry.size}, base_addr=0x${this.baseAddr.toString(16)}`);
+    _diag('=== DOWNLOAD DIAGNOSTIC ===');
+    _diag(`Entry: dive#${entry.diveNumber}, manifest addr=0x${entry.address.toString(16)}, size=${entry.size}, base_addr=0x${this.baseAddr.toString(16)}`);
 
     for (const test of tests) {
       try {
@@ -251,29 +259,29 @@ export class ShearwaterProtocol {
         initCmd[9] = test.size & 0xff;
 
         const hex = Array.from(initCmd).map(b => b.toString(16).padStart(2, '0')).join(' ');
-        console.error(`TEST: ${test.desc} → cmd=[${hex}]`);
+        _diag(`TEST: ${test.desc} → cmd=[${hex}]`);
 
         const response = await this.ble.sendPacket(initCmd);
 
         if (response.length >= 1 && response[0] === CMD_NAK) {
           const nakCmd = response.length >= 2 ? response[1] : 0;
           const nakCode = response.length >= 3 ? response[2] : 0;
-          console.error(`  FAIL: NAK cmd=0x${nakCmd.toString(16)}, code=0x${nakCode.toString(16)}`);
+          _diag(`  FAIL: NAK cmd=0x${nakCmd.toString(16)}, code=0x${nakCode.toString(16)}`);
         } else if (response.length >= 1 && response[0] === LOG_INIT_RESPONSE) {
-          console.error(`  SUCCESS! Response: ${Array.from(response).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+          _diag(`  SUCCESS! Response: ${Array.from(response).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
           // Clean up — send LOG_QUIT
           try {
             await this.ble.sendPacket(new Uint8Array([LOG_QUIT]));
           } catch { /* ignore */ }
         } else {
-          console.error(`  UNKNOWN: ${Array.from(response).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+          _diag(`  UNKNOWN: ${Array.from(response).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
         }
       } catch (e) {
-        console.error(`  ERROR: ${e}`);
+        _diag(`  ERROR: ${e}`);
       }
     }
 
-    console.error('=== END DIAGNOSTIC ===');
+    _diag('=== END DIAGNOSTIC ===');
   }
 
   /**
