@@ -1,0 +1,33 @@
+{
+  "name": "@gue/ble-divecomputer",
+  "version": "0.1.0",
+  "description": "BLE protocol for Shearwater dive computers + libdivecomputer WASM parser",
+  "type": "module",
+  "license": "LGPL-2.1",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./wasm/*": "./dist/wasm/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "BUILD.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "wasm:build": "cd wasm && bash build.sh"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0"
+  }
+}

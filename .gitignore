@@ -1,0 +1,8 @@
+node_modules/
+dist/*.js
+dist/*.cjs
+dist/*.d.ts
+dist/*.d.cts
+dist/*.map
+# Keep precompiled WASM binaries
+!dist/wasm/
