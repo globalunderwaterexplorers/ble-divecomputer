@@ -53,6 +53,14 @@ export class ShearwaterProtocol {
 
   constructor(private ble: ShearwaterBle) {}
 
+  /**
+   * Some Shearwater devices need a brief pause after GATT connect before the
+   * first protocol request, otherwise the initial RDBI often times out.
+   */
+  async waitForReady(delayMs = 500): Promise<void> {
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+  }
+
   /** BLE advertised device name (e.g. "Perdix AI 12345") — fallback for model display */
   get bleDeviceName(): string | undefined {
     return this.ble.deviceName;

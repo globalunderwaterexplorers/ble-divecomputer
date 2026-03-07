@@ -216,6 +216,11 @@ declare class ShearwaterProtocol {
     private keepAliveTimer;
     private transferActive;
     constructor(ble: ShearwaterBle);
+    /**
+     * Some Shearwater devices need a brief pause after GATT connect before the
+     * first protocol request, otherwise the initial RDBI often times out.
+     */
+    waitForReady(delayMs?: number): Promise<void>;
     /** BLE advertised device name (e.g. "Perdix AI 12345") — fallback for model display */
     get bleDeviceName(): string | undefined;
     /**
