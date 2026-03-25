@@ -249,6 +249,8 @@ declare class ShearwaterProtocol {
      * Returns entries sorted by timestamp descending (most recent first).
      */
     getManifest(): Promise<ManifestEntry[]>;
+    private parseManifestPage;
+    private getManifestPageSignature;
     /**
      * Diagnose download parameters by trying all combinations of
      * address, size, and compression to find what the device accepts.

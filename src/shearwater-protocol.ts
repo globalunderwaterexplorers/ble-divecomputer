@@ -16,6 +16,7 @@ import {
   MANIFEST_SIZE,
   MANIFEST_ENTRY_SIZE,
   MANIFEST_VALID,
+  MANIFEST_DELETED,
   DEVICE_MODELS,
 } from './constants';
 import type { ShearwaterDeviceInfo, ManifestEntry } from './types';
@@ -45,6 +46,7 @@ const _diagnosticsEnabled =
 const _diag = (...args: any[]) => {
   if (_diagnosticsEnabled) console.error(...args);
 };
+const MANIFEST_RECORD_COUNT = MANIFEST_SIZE / MANIFEST_ENTRY_SIZE;
 
 export class ShearwaterProtocol {
   private baseAddr = 0;
@@ -181,8 +183,46 @@ export class ShearwaterProtocol {
     // Read base address before manifest — needed for dive downloads
     await this.readBaseAddr();
 
-    const data = await this.readMemory(MANIFEST_ADDRESS, MANIFEST_SIZE);
     const entries: ManifestEntry[] = [];
+    const seenManifestPages = new Set<string>();
+    const seenEntries = new Set<string>();
+
+    while (true) {
+      const data = await this.readMemory(MANIFEST_ADDRESS, MANIFEST_SIZE);
+      const pageSignature = this.getManifestPageSignature(data);
+      if (seenManifestPages.has(pageSignature)) {
+        _info('Manifest page repeated; stopping pagination.');
+        break;
+      }
+      seenManifestPages.add(pageSignature);
+
+      const page = this.parseManifestPage(data, seenEntries);
+      entries.push(...page.entries);
+
+      _info(
+        `Manifest page: ${page.validSlots} valid, ${page.deletedSlots} deleted, ${page.entries.length} new entries`
+      );
+
+      // Match libdivecomputer: a non-full page means there are no older manifest pages.
+      if (page.validSlots + page.deletedSlots !== MANIFEST_RECORD_COUNT) break;
+    }
+
+    // Sort by timestamp descending (most recent first)
+    entries.sort((a, b) => b.timestamp - a.timestamp);
+
+    // Re-index after sort
+    entries.forEach((e, i) => { e.index = i; });
+
+    return entries;
+  }
+
+  private parseManifestPage(
+    data: Uint8Array,
+    seenEntries: Set<string>
+  ): { entries: ManifestEntry[]; validSlots: number; deletedSlots: number } {
+    const entries: ManifestEntry[] = [];
+    let validSlots = 0;
+    let deletedSlots = 0;
 
     // Manifest entry format (32 bytes, big-endian):
     //   Offset 0-1:   marker (0xA5C4 = valid, 0x5A23 = deleted)
@@ -193,12 +233,16 @@ export class ShearwaterProtocol {
     //   Offset 24-27: flash end address
     //   Size = endAddress - startAddress
     for (let offset = 0; offset + MANIFEST_ENTRY_SIZE <= data.length; offset += MANIFEST_ENTRY_SIZE) {
-      const entry = data.slice(offset, offset + MANIFEST_ENTRY_SIZE);
-      const view = new DataView(entry.buffer, entry.byteOffset, entry.byteLength);
-
-      // Check validity marker (first 2 bytes, big-endian)
+      const view = new DataView(data.buffer, data.byteOffset + offset, MANIFEST_ENTRY_SIZE);
       const marker = view.getUint16(0, false);
-      if (marker !== MANIFEST_VALID) continue;
+
+      if (marker === MANIFEST_DELETED) {
+        deletedSlots++;
+        continue;
+      }
+      if (marker !== MANIFEST_VALID) break;
+
+      validSlots++;
 
       const diveNumber = view.getUint16(2, false);
       const timestamp = view.getUint32(4, false);
@@ -208,6 +252,10 @@ export class ShearwaterProtocol {
       const size = endAddress - address;
 
       if (address === 0 || size <= 0) continue;
+
+      const entryKey = `${diveNumber}:${timestamp}:${endTimestamp}:${address}:${endAddress}`;
+      if (seenEntries.has(entryKey)) continue;
+      seenEntries.add(entryKey);
 
       _log(`Manifest entry: dive#${diveNumber} addr=0x${address.toString(16)} endAddr=0x${endAddress.toString(16)} size=${size} ts=${timestamp} (${new Date(timestamp * 1000).toISOString()})`);
 
@@ -222,13 +270,11 @@ export class ShearwaterProtocol {
       });
     }
 
-    // Sort by timestamp descending (most recent first)
-    entries.sort((a, b) => b.timestamp - a.timestamp);
+    return { entries, validSlots, deletedSlots };
+  }
 
-    // Re-index after sort
-    entries.forEach((e, i) => { e.index = i; });
-
-    return entries;
+  private getManifestPageSignature(data: Uint8Array): string {
+    return Array.from(data, byte => byte.toString(16).padStart(2, '0')).join('');
   }
 
   /**

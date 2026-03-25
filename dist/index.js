@@ -337,6 +337,7 @@ var _diagnosticsEnabled = typeof globalThis !== "undefined" && (globalThis.DEBUG
 var _diag = (...args) => {
   if (_diagnosticsEnabled) console.error(...args);
 };
+var MANIFEST_RECORD_COUNT = MANIFEST_SIZE / MANIFEST_ENTRY_SIZE;
 var ShearwaterProtocol = class {
   constructor(ble) {
     this.ble = ble;
@@ -446,13 +447,43 @@ var ShearwaterProtocol = class {
    */
   async getManifest() {
     await this.readBaseAddr();
-    const data = await this.readMemory(MANIFEST_ADDRESS, MANIFEST_SIZE);
     const entries = [];
+    const seenManifestPages = /* @__PURE__ */ new Set();
+    const seenEntries = /* @__PURE__ */ new Set();
+    while (true) {
+      const data = await this.readMemory(MANIFEST_ADDRESS, MANIFEST_SIZE);
+      const pageSignature = this.getManifestPageSignature(data);
+      if (seenManifestPages.has(pageSignature)) {
+        _info("Manifest page repeated; stopping pagination.");
+        break;
+      }
+      seenManifestPages.add(pageSignature);
+      const page = this.parseManifestPage(data, seenEntries);
+      entries.push(...page.entries);
+      _info(
+        `Manifest page: ${page.validSlots} valid, ${page.deletedSlots} deleted, ${page.entries.length} new entries`
+      );
+      if (page.validSlots + page.deletedSlots !== MANIFEST_RECORD_COUNT) break;
+    }
+    entries.sort((a, b) => b.timestamp - a.timestamp);
+    entries.forEach((e, i) => {
+      e.index = i;
+    });
+    return entries;
+  }
+  parseManifestPage(data, seenEntries) {
+    const entries = [];
+    let validSlots = 0;
+    let deletedSlots = 0;
     for (let offset = 0; offset + MANIFEST_ENTRY_SIZE <= data.length; offset += MANIFEST_ENTRY_SIZE) {
-      const entry = data.slice(offset, offset + MANIFEST_ENTRY_SIZE);
-      const view = new DataView(entry.buffer, entry.byteOffset, entry.byteLength);
+      const view = new DataView(data.buffer, data.byteOffset + offset, MANIFEST_ENTRY_SIZE);
       const marker = view.getUint16(0, false);
-      if (marker !== MANIFEST_VALID) continue;
+      if (marker === MANIFEST_DELETED) {
+        deletedSlots++;
+        continue;
+      }
+      if (marker !== MANIFEST_VALID) break;
+      validSlots++;
       const diveNumber = view.getUint16(2, false);
       const timestamp = view.getUint32(4, false);
       const endTimestamp = view.getUint32(8, false);
@@ -460,6 +491,9 @@ var ShearwaterProtocol = class {
       const endAddress = view.getUint32(24, false);
       const size = endAddress - address;
       if (address === 0 || size <= 0) continue;
+      const entryKey = `${diveNumber}:${timestamp}:${endTimestamp}:${address}:${endAddress}`;
+      if (seenEntries.has(entryKey)) continue;
+      seenEntries.add(entryKey);
       _log2(`Manifest entry: dive#${diveNumber} addr=0x${address.toString(16)} endAddr=0x${endAddress.toString(16)} size=${size} ts=${timestamp} (${new Date(timestamp * 1e3).toISOString()})`);
       entries.push({
         index: entries.length,
@@ -471,11 +505,10 @@ var ShearwaterProtocol = class {
         valid: true
       });
     }
-    entries.sort((a, b) => b.timestamp - a.timestamp);
-    entries.forEach((e, i) => {
-      e.index = i;
-    });
-    return entries;
+    return { entries, validSlots, deletedSlots };
+  }
+  getManifestPageSignature(data) {
+    return Array.from(data, (byte) => byte.toString(16).padStart(2, "0")).join("");
   }
   /**
    * Diagnose download parameters by trying all combinations of
