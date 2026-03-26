@@ -54,6 +54,7 @@ export type {
   ShearwaterCapabilities,
   ShearwaterGasSlot,
   ShearwaterTransmitterSlot,
+  PressureSource,
   ManifestEntry,
   BleConnectionState,
   DownloadProgress,

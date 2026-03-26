@@ -106,4 +106,48 @@ describe('parseShearwaterDive', () => {
     expect(parsed.events.some(event => event.type === 'GAS_SWITCH' && event.description === 'Switch to EAN50')).toBe(true);
     expect(parsed.parseWarnings).toEqual([]);
   });
+
+  it('builds pressure source metadata with gas mapping', () => {
+    const parsed = parseShearwaterDive(buildPnfDive(), deviceInfo, manifestEntry);
+
+    expect(parsed.pressureSources).toHaveLength(2);
+
+    const t1 = parsed.pressureSources!.find(s => s.channelLabel === 'T1')!;
+    expect(t1.tankIndex).toBe(0);
+    expect(t1.role).toBe('primary');
+    expect(t1.gasIndex).toBe(0);
+    expect(t1.gasName).toBe('Air');
+    expect(t1.sampleCount).toBe(2);
+    expect(t1.startPressureBar).toBe(206.8);
+    expect(t1.endPressureBar).toBe(179.3);
+    expect(t1.confidence).toBe('high');
+
+    const t2 = parsed.pressureSources!.find(s => s.channelLabel === 'T2')!;
+    expect(t2.tankIndex).toBe(1);
+    expect(t2.role).toBe('secondary');
+    expect(t2.gasIndex).toBe(1);
+    expect(t2.gasName).toBe('EAN50');
+    expect(t2.sampleCount).toBe(2);
+    expect(t2.startPressureBar).toBe(137.9);
+    expect(t2.endPressureBar).toBe(117.2);
+    expect(t2.confidence).toBe('high');
+  });
+
+  it('marks pressure sources as unmapped when no matching gas exists', () => {
+    // Build a dive with only 1 gas but 2 pressure channels
+    const raw = buildPnfDive();
+    // Zero out the second gas (O2 at opening0 + 21)
+    raw[21] = 0;
+
+    const parsed = parseShearwaterDive(raw, deviceInfo, manifestEntry);
+
+    // Only 1 gas mix → T2 has no matching cylinder
+    expect(parsed.cylinders).toHaveLength(1);
+    expect(parsed.pressureSources).toHaveLength(2);
+
+    const t2 = parsed.pressureSources!.find(s => s.channelLabel === 'T2')!;
+    expect(t2.gasIndex).toBeUndefined();
+    expect(t2.gasName).toBeUndefined();
+    expect(t2.confidence).toBe('unmapped');
+  });
 });

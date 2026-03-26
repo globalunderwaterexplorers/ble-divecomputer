@@ -1013,6 +1013,7 @@ function parseShearwaterDive(raw, deviceInfo, manifestEntry) {
   const events = [];
   const startPressureByTank = /* @__PURE__ */ new Map();
   const endPressureByTank = /* @__PURE__ */ new Map();
+  const sampleCountByTank = /* @__PURE__ */ new Map();
   let maxObservedPressureTank = -1;
   let currentTime = 0;
   let maxTemp = -999;
@@ -1096,6 +1097,7 @@ function parseShearwaterDive(raw, deviceInfo, manifestEntry) {
               startPressureByTank.set(i, pressureBar);
             }
             endPressureByTank.set(i, pressureBar);
+            sampleCountByTank.set(i, (sampleCountByTank.get(i) ?? 0) + 1);
             if (i > maxObservedPressureTank) {
               maxObservedPressureTank = i;
             }
@@ -1162,6 +1164,24 @@ function parseShearwaterDive(raw, deviceInfo, manifestEntry) {
   const startTime = new Date(manifestEntry.timestamp * 1e3).toISOString();
   const maxDepthMeters = sampleMaxDepth > 0 ? sampleMaxDepth : closingMaxDepth;
   const durationSeconds = samples.length > 0 ? Math.round(samples[samples.length - 1].timeSeconds) : closingDuration;
+  const pressureSources = [];
+  const channelLabels = ["T1", "T2"];
+  for (const [tankIndex, count] of sampleCountByTank) {
+    const gasIndex = tankIndex < cylinders.length ? tankIndex : void 0;
+    const gasName = gasIndex != null ? cylinders[gasIndex].gasMix.name : void 0;
+    const confidence = gasIndex != null ? "high" : "unmapped";
+    pressureSources.push({
+      tankIndex,
+      channelLabel: channelLabels[tankIndex] ?? `T${tankIndex + 1}`,
+      role: tankIndex === 0 ? "primary" : "secondary",
+      gasIndex,
+      gasName,
+      sampleCount: count,
+      startPressureBar: startPressureByTank.get(tankIndex),
+      endPressureBar: endPressureByTank.get(tankIndex),
+      confidence
+    });
+  }
   const rawDataHash = hashRawData(raw, deviceInfo.serial, manifestEntry.timestamp);
   return {
     sourceFormat: "SHEARWATER_BLE",
@@ -1186,6 +1206,7 @@ function parseShearwaterDive(raw, deviceInfo, manifestEntry) {
     samples,
     sampleIntervalSeconds: sampleInterval,
     events,
+    pressureSources: pressureSources.length > 0 ? pressureSources : void 0,
     decoModel,
     gradientFactorLow: gfLow,
     gradientFactorHigh: gfHigh,

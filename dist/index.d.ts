@@ -162,6 +162,27 @@ interface DiveCylinder {
     endPressureBar?: number;
     gasMix: DiveGasMix;
 }
+/** Pressure source / transmitter channel metadata derived from dive data. */
+interface PressureSource {
+    /** Tank index matching the `tank` field in DiveSample.tankPressures (0-based). */
+    tankIndex: number;
+    /** Channel label from the binary format (e.g. "T1", "T2"). */
+    channelLabel: string;
+    /** Role inferred from channel position and gas configuration. */
+    role?: 'primary' | 'secondary' | 'stage' | 'deco';
+    /** Index into the cylinders array, if a gas mapping could be established. */
+    gasIndex?: number;
+    /** Gas mix name at the mapped cylinder, if available. */
+    gasName?: string;
+    /** Number of samples that contained a valid pressure reading on this channel. */
+    sampleCount: number;
+    /** First observed pressure (bar). */
+    startPressureBar?: number;
+    /** Last observed pressure (bar). */
+    endPressureBar?: number;
+    /** Confidence that the gas mapping is correct. */
+    confidence: 'high' | 'medium' | 'low' | 'unmapped';
+}
 /** A single time-series data point during a dive */
 interface DiveSample {
     timeSeconds: number;
@@ -228,6 +249,8 @@ interface ParsedDive {
     samples: DiveSample[];
     sampleIntervalSeconds?: number;
     events: DiveEvent[];
+    /** Pressure source metadata derived from the binary dive data. */
+    pressureSources?: PressureSource[];
     decoModel?: string;
     gradientFactorLow?: number;
     gradientFactorHigh?: number;
@@ -569,4 +592,4 @@ declare const MANIFEST_DELETED = 23075;
 declare const DEVICE_MODELS: Record<number, string>;
 declare const PACKET_TIMEOUT_MS = 10000;
 
-export { type BleConnectionState, CMD_NAK, CMD_RDBI_REQUEST, CMD_RDBI_RESPONSE, CMD_TESTER_PRESENT, DC_FAMILY, DEVICE_MODELS, type DcFamily, type DiveComputerDescriptor, type DiveComputerInfo, type DiveCylinder, type DiveEvent, type DiveEventType, type DiveGasMix, type DiveLogFormat, type DiveLogParseResult, type DiveParseError, type DiveParseErrorCode, type DiveSample, type DiveSiteInfo, type DownloadProgress, LOG_BLOCK, LOG_BLOCK_RESPONSE, LOG_INIT, LOG_INIT_RESPONSE, LOG_QUIT, LOG_QUIT_RESPONSE, type LibDCLoaderOptions, type LibDCModule, MANIFEST_ADDRESS, MANIFEST_DELETED, MANIFEST_ENTRY_SIZE, MANIFEST_SIZE, MANIFEST_VALID, type ManifestEntry, PACKET_TIMEOUT_MS, type ParsedDive, RDBI_AI_T1_CONFIG, RDBI_AI_T2_CONFIG, RDBI_AMBIENT_PRESSURE, RDBI_BATTERY, RDBI_DECO_MODEL, RDBI_FIRMWARE, RDBI_GAS_TABLE, RDBI_GF_CONFIG, RDBI_HARDWARE, RDBI_LOGUPLOAD, RDBI_SERIAL, SHEARWATER_CHAR_UUID, SHEARWATER_SERVICE_UUID, SLIP_END, SLIP_ESC, SLIP_ESC_END, SLIP_ESC_ESC, ShearwaterBle, type ShearwaterCapabilities, type ShearwaterConfigSnapshot, type ShearwaterDeviceInfo, type ShearwaterGasSlot, ShearwaterProtocol, type ShearwaterRdbiProbeRecord, type ShearwaterTransmitterSlot, SlipDecoder, configureLibDC, getAvailableDevices, isLibDCAvailable, loadLibDC, parseDiveWasm, parseShearwaterDive, parseShearwaterDiveWasm, slipEncode };
+export { type BleConnectionState, CMD_NAK, CMD_RDBI_REQUEST, CMD_RDBI_RESPONSE, CMD_TESTER_PRESENT, DC_FAMILY, DEVICE_MODELS, type DcFamily, type DiveComputerDescriptor, type DiveComputerInfo, type DiveCylinder, type DiveEvent, type DiveEventType, type DiveGasMix, type DiveLogFormat, type DiveLogParseResult, type DiveParseError, type DiveParseErrorCode, type DiveSample, type DiveSiteInfo, type DownloadProgress, LOG_BLOCK, LOG_BLOCK_RESPONSE, LOG_INIT, LOG_INIT_RESPONSE, LOG_QUIT, LOG_QUIT_RESPONSE, type LibDCLoaderOptions, type LibDCModule, MANIFEST_ADDRESS, MANIFEST_DELETED, MANIFEST_ENTRY_SIZE, MANIFEST_SIZE, MANIFEST_VALID, type ManifestEntry, PACKET_TIMEOUT_MS, type ParsedDive, type PressureSource, RDBI_AI_T1_CONFIG, RDBI_AI_T2_CONFIG, RDBI_AMBIENT_PRESSURE, RDBI_BATTERY, RDBI_DECO_MODEL, RDBI_FIRMWARE, RDBI_GAS_TABLE, RDBI_GF_CONFIG, RDBI_HARDWARE, RDBI_LOGUPLOAD, RDBI_SERIAL, SHEARWATER_CHAR_UUID, SHEARWATER_SERVICE_UUID, SLIP_END, SLIP_ESC, SLIP_ESC_END, SLIP_ESC_ESC, ShearwaterBle, type ShearwaterCapabilities, type ShearwaterConfigSnapshot, type ShearwaterDeviceInfo, type ShearwaterGasSlot, ShearwaterProtocol, type ShearwaterRdbiProbeRecord, type ShearwaterTransmitterSlot, SlipDecoder, configureLibDC, getAvailableDevices, isLibDCAvailable, loadLibDC, parseDiveWasm, parseShearwaterDive, parseShearwaterDiveWasm, slipEncode };

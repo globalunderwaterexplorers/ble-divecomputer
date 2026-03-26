@@ -1,5 +1,5 @@
 import type { ShearwaterDeviceInfo, ManifestEntry } from './types';
-import type { ParsedDive, DiveSample, DiveCylinder, DiveGasMix, DiveEvent } from './types';
+import type { ParsedDive, DiveSample, DiveCylinder, DiveGasMix, DiveEvent, PressureSource } from './types';
 import { DEVICE_MODELS } from './constants';
 
 /**
@@ -162,6 +162,7 @@ export function parseShearwaterDive(
   const events: DiveEvent[] = [];
   const startPressureByTank = new Map<number, number>();
   const endPressureByTank = new Map<number, number>();
+  const sampleCountByTank = new Map<number, number>();
   let maxObservedPressureTank = -1;
   let currentTime = 0;
   let maxTemp = -999;
@@ -267,6 +268,7 @@ export function parseShearwaterDive(
               startPressureByTank.set(i, pressureBar);
             }
             endPressureByTank.set(i, pressureBar);
+            sampleCountByTank.set(i, (sampleCountByTank.get(i) ?? 0) + 1);
             if (i > maxObservedPressureTank) {
               maxObservedPressureTank = i;
             }
@@ -356,6 +358,31 @@ export function parseShearwaterDive(
     ? Math.round(samples[samples.length - 1].timeSeconds)
     : closingDuration;
 
+  // ===== Build pressure source metadata =====
+  const pressureSources: PressureSource[] = [];
+  const channelLabels = ['T1', 'T2'];
+  for (const [tankIndex, count] of sampleCountByTank) {
+    // Map tank channel to gas index:
+    // Shearwater T1 (offset 27) = primary gas = gas slot 0
+    // Shearwater T2 (offset 19) = secondary gas = gas slot 1
+    // This is a positional mapping — T1 always carries the first configured gas.
+    const gasIndex = tankIndex < cylinders.length ? tankIndex : undefined;
+    const gasName = gasIndex != null ? cylinders[gasIndex].gasMix.name : undefined;
+    const confidence = gasIndex != null ? 'high' as const : 'unmapped' as const;
+
+    pressureSources.push({
+      tankIndex,
+      channelLabel: channelLabels[tankIndex] ?? `T${tankIndex + 1}`,
+      role: tankIndex === 0 ? 'primary' : 'secondary',
+      gasIndex,
+      gasName,
+      sampleCount: count,
+      startPressureBar: startPressureByTank.get(tankIndex),
+      endPressureBar: endPressureByTank.get(tankIndex),
+      confidence,
+    });
+  }
+
   const rawDataHash = hashRawData(raw, deviceInfo.serial, manifestEntry.timestamp);
 
   return {
@@ -381,6 +408,7 @@ export function parseShearwaterDive(
     samples,
     sampleIntervalSeconds: sampleInterval,
     events,
+    pressureSources: pressureSources.length > 0 ? pressureSources : undefined,
     decoModel,
     gradientFactorLow: gfLow,
     gradientFactorHigh: gfHigh,
