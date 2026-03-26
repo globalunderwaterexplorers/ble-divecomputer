@@ -68,6 +68,14 @@ interface ShearwaterDeviceInfo {
     model: string;
     modelId: number;
 }
+interface ShearwaterRdbiProbeRecord {
+    id: number;
+    label?: string;
+    length: number;
+    data: Uint8Array;
+    hex: string;
+    ascii?: string;
+}
 interface ManifestEntry {
     index: number;
     diveNumber: number;
@@ -251,6 +259,8 @@ declare class ShearwaterProtocol {
     getManifest(): Promise<ManifestEntry[]>;
     private parseManifestPage;
     private getManifestPageSignature;
+    private toHex;
+    private decodeAsciiPreview;
     /**
      * Diagnose download parameters by trying all combinations of
      * address, size, and compression to find what the device accepts.
@@ -268,6 +278,11 @@ declare class ShearwaterProtocol {
      * resulting in "Trans Req Seq" errors.
      */
     downloadDive(entry: ManifestEntry, onProgress?: (bytes: number) => void): Promise<Uint8Array>;
+    /**
+     * Probe a range of RDBI identifiers and return successful responses.
+     * This is read-only discovery for Shearwater capability/config exploration.
+     */
+    probeRdbiRange(startId?: number, endId?: number): Promise<ShearwaterRdbiProbeRecord[]>;
     /**
      * Send an RDBI (Read Data By Identifier) request.
      * Command: [0x22, id_hi, id_lo]
@@ -486,4 +501,4 @@ declare const MANIFEST_DELETED = 23075;
 declare const DEVICE_MODELS: Record<number, string>;
 declare const PACKET_TIMEOUT_MS = 10000;
 
-export { type BleConnectionState, CMD_NAK, CMD_RDBI_REQUEST, CMD_RDBI_RESPONSE, CMD_TESTER_PRESENT, DC_FAMILY, DEVICE_MODELS, type DcFamily, type DiveComputerDescriptor, type DiveComputerInfo, type DiveCylinder, type DiveEvent, type DiveEventType, type DiveGasMix, type DiveLogFormat, type DiveLogParseResult, type DiveParseError, type DiveParseErrorCode, type DiveSample, type DiveSiteInfo, type DownloadProgress, LOG_BLOCK, LOG_BLOCK_RESPONSE, LOG_INIT, LOG_INIT_RESPONSE, LOG_QUIT, LOG_QUIT_RESPONSE, type LibDCLoaderOptions, type LibDCModule, MANIFEST_ADDRESS, MANIFEST_DELETED, MANIFEST_ENTRY_SIZE, MANIFEST_SIZE, MANIFEST_VALID, type ManifestEntry, PACKET_TIMEOUT_MS, type ParsedDive, RDBI_FIRMWARE, RDBI_HARDWARE, RDBI_LOGUPLOAD, RDBI_SERIAL, SHEARWATER_CHAR_UUID, SHEARWATER_SERVICE_UUID, SLIP_END, SLIP_ESC, SLIP_ESC_END, SLIP_ESC_ESC, ShearwaterBle, type ShearwaterDeviceInfo, ShearwaterProtocol, SlipDecoder, configureLibDC, getAvailableDevices, isLibDCAvailable, loadLibDC, parseDiveWasm, parseShearwaterDive, parseShearwaterDiveWasm, slipEncode };
+export { type BleConnectionState, CMD_NAK, CMD_RDBI_REQUEST, CMD_RDBI_RESPONSE, CMD_TESTER_PRESENT, DC_FAMILY, DEVICE_MODELS, type DcFamily, type DiveComputerDescriptor, type DiveComputerInfo, type DiveCylinder, type DiveEvent, type DiveEventType, type DiveGasMix, type DiveLogFormat, type DiveLogParseResult, type DiveParseError, type DiveParseErrorCode, type DiveSample, type DiveSiteInfo, type DownloadProgress, LOG_BLOCK, LOG_BLOCK_RESPONSE, LOG_INIT, LOG_INIT_RESPONSE, LOG_QUIT, LOG_QUIT_RESPONSE, type LibDCLoaderOptions, type LibDCModule, MANIFEST_ADDRESS, MANIFEST_DELETED, MANIFEST_ENTRY_SIZE, MANIFEST_SIZE, MANIFEST_VALID, type ManifestEntry, PACKET_TIMEOUT_MS, type ParsedDive, RDBI_FIRMWARE, RDBI_HARDWARE, RDBI_LOGUPLOAD, RDBI_SERIAL, SHEARWATER_CHAR_UUID, SHEARWATER_SERVICE_UUID, SLIP_END, SLIP_ESC, SLIP_ESC_END, SLIP_ESC_ESC, ShearwaterBle, type ShearwaterDeviceInfo, ShearwaterProtocol, type ShearwaterRdbiProbeRecord, SlipDecoder, configureLibDC, getAvailableDevices, isLibDCAvailable, loadLibDC, parseDiveWasm, parseShearwaterDive, parseShearwaterDiveWasm, slipEncode };
