@@ -20,14 +20,11 @@ export const RDBI_FIRMWARE = 0x8011;
 export const RDBI_LOGUPLOAD = 0x8021;
 export const RDBI_HARDWARE = 0x8050;
 
-// RDBI data identifiers — configuration (discovered via probing)
-export const RDBI_BATTERY = 0x8031;
-export const RDBI_AMBIENT_PRESSURE = 0x8032;
-export const RDBI_GF_CONFIG = 0x8040;
-export const RDBI_DECO_MODEL = 0x8041;
-export const RDBI_GAS_TABLE = 0x8042;
-export const RDBI_AI_T1_CONFIG = 0x8043;
-export const RDBI_AI_T2_CONFIG = 0x8044;
+// RDBI data identifiers — discovered via hardware probing (Perdix 2, V95 Classic)
+// These respond but their payloads are not yet fully decoded.
+export const RDBI_DEVICE_TYPE = 0x8000;   // 1 byte — device type flag (observed: 0x01)
+export const RDBI_BOOTLOADER = 0x8012;    // 1 byte — bootloader/feature flag (observed: 0x00)
+export const RDBI_LOG_STATUS = 0x8020;    // 9 bytes — log memory status block
 
 // Log download commands (direct, not WDBI-wrapped)
 export const LOG_INIT = 0x35;
@@ -58,6 +55,8 @@ export const DEVICE_MODELS: Record<number, string> = {
   11: 'Perdix 2',
   12: 'Tern',
   13: 'Peregrine TX',
+  // Hardware revision bytes observed on some devices — map to known models
+  196: 'Perdix 2', // 0xC4 — reported by Perdix 2 hardware RDBI
 };
 
 // BLE communication timeout (ms)

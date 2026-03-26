@@ -354,17 +354,21 @@ declare class ShearwaterProtocol {
     downloadDive(entry: ManifestEntry, onProgress?: (bytes: number) => void): Promise<Uint8Array>;
     /**
      * Probe a range of RDBI identifiers and return successful responses.
-     * This is read-only discovery for Shearwater capability/config exploration.
+     * Uses a short timeout (1.5s) per identifier so unsupported IDs fail fast
+     * instead of blocking for the default 10s packet timeout.
      */
     probeRdbiRange(startId?: number, endId?: number): Promise<ShearwaterRdbiProbeRecord[]>;
     /**
-     * Read a structured configuration snapshot from the connected device.
+     * Read a configuration snapshot from the connected device.
      *
-     * Probes the full RDBI range, then attempts to decode known identifiers
-     * into structured fields (gases, GF, deco model, transmitter pairings, etc.).
-     * Unknown identifiers are preserved as raw records.
+     * Probes the full RDBI range with a short timeout per identifier.
+     * On current Shearwater firmware (tested: Perdix 2 V95 Classic), only
+     * 7 identifiers respond — all related to device identity and log access.
+     * Configuration data (gases, GF, transmitter pairings) is NOT available
+     * via RDBI; it lives in the dive binary opening records instead.
      *
-     * This is the main entry point for Phase 1-3 of the Shearwater expansion plan.
+     * The raw records are preserved so Studio can display them for diagnostics
+     * and detect if future firmware versions expose additional identifiers.
      */
     getConfigurationSnapshot(deviceInfo: ShearwaterDeviceInfo): Promise<ShearwaterConfigSnapshot>;
     /**
@@ -571,13 +575,9 @@ declare const RDBI_SERIAL = 32784;
 declare const RDBI_FIRMWARE = 32785;
 declare const RDBI_LOGUPLOAD = 32801;
 declare const RDBI_HARDWARE = 32848;
-declare const RDBI_BATTERY = 32817;
-declare const RDBI_AMBIENT_PRESSURE = 32818;
-declare const RDBI_GF_CONFIG = 32832;
-declare const RDBI_DECO_MODEL = 32833;
-declare const RDBI_GAS_TABLE = 32834;
-declare const RDBI_AI_T1_CONFIG = 32835;
-declare const RDBI_AI_T2_CONFIG = 32836;
+declare const RDBI_DEVICE_TYPE = 32768;
+declare const RDBI_BOOTLOADER = 32786;
+declare const RDBI_LOG_STATUS = 32800;
 declare const LOG_INIT = 53;
 declare const LOG_BLOCK = 54;
 declare const LOG_QUIT = 55;
@@ -592,4 +592,4 @@ declare const MANIFEST_DELETED = 23075;
 declare const DEVICE_MODELS: Record<number, string>;
 declare const PACKET_TIMEOUT_MS = 10000;
 
-export { type BleConnectionState, CMD_NAK, CMD_RDBI_REQUEST, CMD_RDBI_RESPONSE, CMD_TESTER_PRESENT, DC_FAMILY, DEVICE_MODELS, type DcFamily, type DiveComputerDescriptor, type DiveComputerInfo, type DiveCylinder, type DiveEvent, type DiveEventType, type DiveGasMix, type DiveLogFormat, type DiveLogParseResult, type DiveParseError, type DiveParseErrorCode, type DiveSample, type DiveSiteInfo, type DownloadProgress, LOG_BLOCK, LOG_BLOCK_RESPONSE, LOG_INIT, LOG_INIT_RESPONSE, LOG_QUIT, LOG_QUIT_RESPONSE, type LibDCLoaderOptions, type LibDCModule, MANIFEST_ADDRESS, MANIFEST_DELETED, MANIFEST_ENTRY_SIZE, MANIFEST_SIZE, MANIFEST_VALID, type ManifestEntry, PACKET_TIMEOUT_MS, type ParsedDive, type PressureSource, RDBI_AI_T1_CONFIG, RDBI_AI_T2_CONFIG, RDBI_AMBIENT_PRESSURE, RDBI_BATTERY, RDBI_DECO_MODEL, RDBI_FIRMWARE, RDBI_GAS_TABLE, RDBI_GF_CONFIG, RDBI_HARDWARE, RDBI_LOGUPLOAD, RDBI_SERIAL, SHEARWATER_CHAR_UUID, SHEARWATER_SERVICE_UUID, SLIP_END, SLIP_ESC, SLIP_ESC_END, SLIP_ESC_ESC, ShearwaterBle, type ShearwaterCapabilities, type ShearwaterConfigSnapshot, type ShearwaterDeviceInfo, type ShearwaterGasSlot, ShearwaterProtocol, type ShearwaterRdbiProbeRecord, type ShearwaterTransmitterSlot, SlipDecoder, configureLibDC, getAvailableDevices, isLibDCAvailable, loadLibDC, parseDiveWasm, parseShearwaterDive, parseShearwaterDiveWasm, slipEncode };
+export { type BleConnectionState, CMD_NAK, CMD_RDBI_REQUEST, CMD_RDBI_RESPONSE, CMD_TESTER_PRESENT, DC_FAMILY, DEVICE_MODELS, type DcFamily, type DiveComputerDescriptor, type DiveComputerInfo, type DiveCylinder, type DiveEvent, type DiveEventType, type DiveGasMix, type DiveLogFormat, type DiveLogParseResult, type DiveParseError, type DiveParseErrorCode, type DiveSample, type DiveSiteInfo, type DownloadProgress, LOG_BLOCK, LOG_BLOCK_RESPONSE, LOG_INIT, LOG_INIT_RESPONSE, LOG_QUIT, LOG_QUIT_RESPONSE, type LibDCLoaderOptions, type LibDCModule, MANIFEST_ADDRESS, MANIFEST_DELETED, MANIFEST_ENTRY_SIZE, MANIFEST_SIZE, MANIFEST_VALID, type ManifestEntry, PACKET_TIMEOUT_MS, type ParsedDive, type PressureSource, RDBI_BOOTLOADER, RDBI_DEVICE_TYPE, RDBI_FIRMWARE, RDBI_HARDWARE, RDBI_LOGUPLOAD, RDBI_LOG_STATUS, RDBI_SERIAL, SHEARWATER_CHAR_UUID, SHEARWATER_SERVICE_UUID, SLIP_END, SLIP_ESC, SLIP_ESC_END, SLIP_ESC_ESC, ShearwaterBle, type ShearwaterCapabilities, type ShearwaterConfigSnapshot, type ShearwaterDeviceInfo, type ShearwaterGasSlot, ShearwaterProtocol, type ShearwaterRdbiProbeRecord, type ShearwaterTransmitterSlot, SlipDecoder, configureLibDC, getAvailableDevices, isLibDCAvailable, loadLibDC, parseDiveWasm, parseShearwaterDive, parseShearwaterDiveWasm, slipEncode };

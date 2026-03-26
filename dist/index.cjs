@@ -38,16 +38,12 @@ __export(index_exports, {
   MANIFEST_SIZE: () => MANIFEST_SIZE,
   MANIFEST_VALID: () => MANIFEST_VALID,
   PACKET_TIMEOUT_MS: () => PACKET_TIMEOUT_MS,
-  RDBI_AI_T1_CONFIG: () => RDBI_AI_T1_CONFIG,
-  RDBI_AI_T2_CONFIG: () => RDBI_AI_T2_CONFIG,
-  RDBI_AMBIENT_PRESSURE: () => RDBI_AMBIENT_PRESSURE,
-  RDBI_BATTERY: () => RDBI_BATTERY,
-  RDBI_DECO_MODEL: () => RDBI_DECO_MODEL,
+  RDBI_BOOTLOADER: () => RDBI_BOOTLOADER,
+  RDBI_DEVICE_TYPE: () => RDBI_DEVICE_TYPE,
   RDBI_FIRMWARE: () => RDBI_FIRMWARE,
-  RDBI_GAS_TABLE: () => RDBI_GAS_TABLE,
-  RDBI_GF_CONFIG: () => RDBI_GF_CONFIG,
   RDBI_HARDWARE: () => RDBI_HARDWARE,
   RDBI_LOGUPLOAD: () => RDBI_LOGUPLOAD,
+  RDBI_LOG_STATUS: () => RDBI_LOG_STATUS,
   RDBI_SERIAL: () => RDBI_SERIAL,
   SHEARWATER_CHAR_UUID: () => SHEARWATER_CHAR_UUID,
   SHEARWATER_SERVICE_UUID: () => SHEARWATER_SERVICE_UUID,
@@ -84,13 +80,9 @@ var RDBI_SERIAL = 32784;
 var RDBI_FIRMWARE = 32785;
 var RDBI_LOGUPLOAD = 32801;
 var RDBI_HARDWARE = 32848;
-var RDBI_BATTERY = 32817;
-var RDBI_AMBIENT_PRESSURE = 32818;
-var RDBI_GF_CONFIG = 32832;
-var RDBI_DECO_MODEL = 32833;
-var RDBI_GAS_TABLE = 32834;
-var RDBI_AI_T1_CONFIG = 32835;
-var RDBI_AI_T2_CONFIG = 32836;
+var RDBI_DEVICE_TYPE = 32768;
+var RDBI_BOOTLOADER = 32786;
+var RDBI_LOG_STATUS = 32800;
 var LOG_INIT = 53;
 var LOG_BLOCK = 54;
 var LOG_QUIT = 55;
@@ -114,7 +106,10 @@ var DEVICE_MODELS = {
   10: "Petrel 3",
   11: "Perdix 2",
   12: "Tern",
-  13: "Peregrine TX"
+  13: "Peregrine TX",
+  // Hardware revision bytes observed on some devices — map to known models
+  196: "Perdix 2"
+  // 0xC4 — reported by Perdix 2 hardware RDBI
 };
 var PACKET_TIMEOUT_MS = 1e4;
 
@@ -417,23 +412,13 @@ var _diag = (...args) => {
 };
 var MANIFEST_RECORD_COUNT = MANIFEST_SIZE / MANIFEST_ENTRY_SIZE;
 var KNOWN_RDBI_LABELS = {
+  [RDBI_DEVICE_TYPE]: "Device type",
   [RDBI_SERIAL]: "Serial",
   [RDBI_FIRMWARE]: "Firmware",
+  [RDBI_BOOTLOADER]: "Bootloader",
+  [RDBI_LOG_STATUS]: "Log status",
   [RDBI_LOGUPLOAD]: "Log upload base address",
-  [RDBI_HARDWARE]: "Hardware",
-  [RDBI_BATTERY]: "Battery",
-  [RDBI_AMBIENT_PRESSURE]: "Ambient pressure",
-  [RDBI_GF_CONFIG]: "Gradient factors",
-  [RDBI_DECO_MODEL]: "Deco model",
-  [RDBI_GAS_TABLE]: "Gas table",
-  [RDBI_AI_T1_CONFIG]: "AI transmitter 1",
-  [RDBI_AI_T2_CONFIG]: "AI transmitter 2"
-};
-var DECO_MODEL_NAMES = {
-  0: "B\xFChlmann ZHL-16C",
-  1: "VPM-B",
-  2: "VPM-B/GFS",
-  3: "DCIEM"
+  [RDBI_HARDWARE]: "Hardware"
 };
 var ShearwaterProtocol = class {
   constructor(ble) {
@@ -687,13 +672,15 @@ var ShearwaterProtocol = class {
   }
   /**
    * Probe a range of RDBI identifiers and return successful responses.
-   * This is read-only discovery for Shearwater capability/config exploration.
+   * Uses a short timeout (1.5s) per identifier so unsupported IDs fail fast
+   * instead of blocking for the default 10s packet timeout.
    */
   async probeRdbiRange(startId = 32768, endId = 32863) {
+    const PROBE_TIMEOUT_MS = 1500;
     const records = [];
     for (let id = startId; id <= endId; id++) {
       try {
-        const data = await this.rdbi(id);
+        const data = await this.rdbi(id, PROBE_TIMEOUT_MS);
         records.push({
           id,
           label: KNOWN_RDBI_LABELS[id],
@@ -708,82 +695,27 @@ var ShearwaterProtocol = class {
     return records;
   }
   /**
-   * Read a structured configuration snapshot from the connected device.
+   * Read a configuration snapshot from the connected device.
    *
-   * Probes the full RDBI range, then attempts to decode known identifiers
-   * into structured fields (gases, GF, deco model, transmitter pairings, etc.).
-   * Unknown identifiers are preserved as raw records.
+   * Probes the full RDBI range with a short timeout per identifier.
+   * On current Shearwater firmware (tested: Perdix 2 V95 Classic), only
+   * 7 identifiers respond — all related to device identity and log access.
+   * Configuration data (gases, GF, transmitter pairings) is NOT available
+   * via RDBI; it lives in the dive binary opening records instead.
    *
-   * This is the main entry point for Phase 1-3 of the Shearwater expansion plan.
+   * The raw records are preserved so Studio can display them for diagnostics
+   * and detect if future firmware versions expose additional identifiers.
    */
   async getConfigurationSnapshot(deviceInfo) {
     const rawRecords = await this.probeRdbiRange(32768, 32863);
-    const recordMap = new Map(rawRecords.map((r) => [r.id, r]));
-    let batteryPercent;
-    let batteryVoltageMillivolts;
-    const batteryRecord = recordMap.get(RDBI_BATTERY);
-    if (batteryRecord && batteryRecord.data.length >= 2) {
-      batteryVoltageMillivolts = batteryRecord.data[0] << 8 | batteryRecord.data[1];
-      if (batteryRecord.data.length >= 3) {
-        batteryPercent = batteryRecord.data[2];
-      }
-    }
-    let ambientPressureMbar;
-    const ambientRecord = recordMap.get(RDBI_AMBIENT_PRESSURE);
-    if (ambientRecord && ambientRecord.data.length >= 2) {
-      ambientPressureMbar = ambientRecord.data[0] << 8 | ambientRecord.data[1];
-    }
-    let gradientFactorLow;
-    let gradientFactorHigh;
-    const gfRecord = recordMap.get(RDBI_GF_CONFIG);
-    if (gfRecord && gfRecord.data.length >= 2) {
-      gradientFactorLow = gfRecord.data[0];
-      gradientFactorHigh = gfRecord.data[1];
-    }
-    let decoModel;
-    const decoRecord = recordMap.get(RDBI_DECO_MODEL);
-    if (decoRecord && decoRecord.data.length >= 1) {
-      decoModel = DECO_MODEL_NAMES[decoRecord.data[0]] ?? `Unknown (${decoRecord.data[0]})`;
-    }
-    const gases = [];
-    const gasRecord = recordMap.get(RDBI_GAS_TABLE);
-    if (gasRecord && gasRecord.data.length >= 3) {
-      const entrySize = 3;
-      const slotCount = Math.floor(gasRecord.data.length / entrySize);
-      for (let i = 0; i < slotCount; i++) {
-        const offset = i * entrySize;
-        const o2 = gasRecord.data[offset];
-        const he = gasRecord.data[offset + 1];
-        const flags = gasRecord.data[offset + 2];
-        if (o2 > 0) {
-          gases.push({
-            slot: i,
-            oxygenPercent: o2,
-            heliumPercent: he,
-            enabled: (flags & 1) !== 0
-          });
-        }
-      }
-    }
-    const transmitters = [];
-    const t1Record = recordMap.get(RDBI_AI_T1_CONFIG);
-    if (t1Record && t1Record.data.length >= 4) {
-      const id = (t1Record.data[0] << 24 | t1Record.data[1] << 16 | t1Record.data[2] << 8 | t1Record.data[3]) >>> 0;
-      transmitters.push({ slot: 0, pairingId: id, paired: id !== 0 });
-    }
-    const t2Record = recordMap.get(RDBI_AI_T2_CONFIG);
-    if (t2Record && t2Record.data.length >= 4) {
-      const id = (t2Record.data[0] << 24 | t2Record.data[1] << 16 | t2Record.data[2] << 8 | t2Record.data[3]) >>> 0;
-      transmitters.push({ slot: 1, pairingId: id, paired: id !== 0 });
-    }
     const capabilities = {
       hasExtendedRdbi: rawRecords.length > 4,
-      hasBatteryStatus: batteryVoltageMillivolts != null,
-      hasAmbientPressure: ambientPressureMbar != null,
-      hasGradientFactors: gradientFactorLow != null && gradientFactorHigh != null,
-      hasDecoModel: decoModel != null,
-      hasGasTable: gases.length > 0,
-      hasTransmitterConfig: transmitters.some((t) => t.paired)
+      hasBatteryStatus: false,
+      hasAmbientPressure: false,
+      hasGradientFactors: false,
+      hasDecoModel: false,
+      hasGasTable: false,
+      hasTransmitterConfig: false
     };
     return {
       capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -793,14 +725,8 @@ var ShearwaterProtocol = class {
       hardware: deviceInfo.hardware,
       model: deviceInfo.model,
       modelId: deviceInfo.modelId,
-      batteryPercent,
-      batteryVoltageMillivolts,
-      ambientPressureMbar,
-      decoModel,
-      gradientFactorLow,
-      gradientFactorHigh,
-      gases,
-      transmitters,
+      gases: [],
+      transmitters: [],
       rawRecords
     };
   }
@@ -809,12 +735,12 @@ var ShearwaterProtocol = class {
    * Command: [0x22, id_hi, id_lo]
    * Response: [0x62, id_hi, id_lo, ...data]
    */
-  async rdbi(id) {
+  async rdbi(id, timeoutMs) {
     const cmd = new Uint8Array(3);
     cmd[0] = CMD_RDBI_REQUEST;
     cmd[1] = id >> 8 & 255;
     cmd[2] = id & 255;
-    const response = await this.ble.sendPacket(cmd);
+    const response = await this.ble.sendPacket(cmd, timeoutMs);
     if (response.length < 3 || response[0] !== CMD_RDBI_RESPONSE) {
       throw new Error(`Invalid RDBI response for 0x${id.toString(16)}`);
     }
@@ -1799,16 +1725,12 @@ async function getAvailableDevices() {
   MANIFEST_SIZE,
   MANIFEST_VALID,
   PACKET_TIMEOUT_MS,
-  RDBI_AI_T1_CONFIG,
-  RDBI_AI_T2_CONFIG,
-  RDBI_AMBIENT_PRESSURE,
-  RDBI_BATTERY,
-  RDBI_DECO_MODEL,
+  RDBI_BOOTLOADER,
+  RDBI_DEVICE_TYPE,
   RDBI_FIRMWARE,
-  RDBI_GAS_TABLE,
-  RDBI_GF_CONFIG,
   RDBI_HARDWARE,
   RDBI_LOGUPLOAD,
+  RDBI_LOG_STATUS,
   RDBI_SERIAL,
   SHEARWATER_CHAR_UUID,
   SHEARWATER_SERVICE_UUID,
