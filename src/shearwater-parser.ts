@@ -160,6 +160,9 @@ export function parseShearwaterDive(
   // ===== PHASE 6: Parse samples =====
   const samples: DiveSample[] = [];
   const events: DiveEvent[] = [];
+  const startPressureByTank = new Map<number, number>();
+  const endPressureByTank = new Map<number, number>();
+  let maxObservedPressureTank = -1;
   let currentTime = 0;
   let maxTemp = -999;
   let minTemp = 999;
@@ -251,18 +254,31 @@ export function parseShearwaterDive(
     if (logVersion >= 7 && petrel) {
       const pressureOffsets = [27, 19]; // T1 primary, T2 secondary
       const count = recordType === REC_AVELO_SAMPLE ? 1 : 2;
+      const tankPressures: Array<{ tank: number; bar: number }> = [];
       for (let i = 0; i < count; i++) {
         const pressureRaw = (raw[offset + pnf + pressureOffsets[i]] << 8) | raw[offset + pnf + pressureOffsets[i] + 1];
         // Values >= 0xFFF0 are special codes (AI off, no comms, not paired)
         if (pressureRaw > 0 && pressureRaw < 0xFFF0) {
           const pressurePsi = (pressureRaw & 0x0FFF) * 2;
           if (pressurePsi > 0) {
+            const pressureBar = psiToBar(pressurePsi);
+            tankPressures.push({ tank: i, bar: pressureBar });
+            if (!startPressureByTank.has(i)) {
+              startPressureByTank.set(i, pressureBar);
+            }
+            endPressureByTank.set(i, pressureBar);
+            if (i > maxObservedPressureTank) {
+              maxObservedPressureTank = i;
+            }
             // Use first valid pressure reading (T1 preferred)
             if (sample.pressureBar == null) {
-              sample.pressureBar = psiToBar(pressurePsi);
+              sample.pressureBar = pressureBar;
             }
           }
         }
+      }
+      if (tankPressures.length > 0) {
+        sample.tankPressures = tankPressures;
       }
     }
 
@@ -318,18 +334,21 @@ export function parseShearwaterDive(
   }
 
   // ===== Build output =====
-  const firstGas = gasMixes.length > 0 ? gasMixes[0] : { o2: 21, he: 0 };
-  const gasMix: DiveGasMix = {
-    oxygen: firstGas.o2 / 100,
-    helium: firstGas.he / 100,
-    nitrogen: Math.max(0, 1 - firstGas.o2 / 100 - firstGas.he / 100),
-    name: formatGasName(firstGas.o2, firstGas.he),
-  };
+  const cylinders: DiveCylinder[] = (gasMixes.length > 0 ? gasMixes : [{ o2: 21, he: 0 }]).map((mix, index) => {
+    const gasMix: DiveGasMix = {
+      oxygen: mix.o2 / 100,
+      helium: mix.he / 100,
+      nitrogen: Math.max(0, 1 - mix.o2 / 100 - mix.he / 100),
+      name: formatGasName(mix.o2, mix.he),
+    };
 
-  const cylinders: DiveCylinder[] = [{
-    index: 0,
-    gasMix,
-  }];
+    return {
+      index,
+      gasMix,
+      startPressureBar: startPressureByTank.get(index),
+      endPressureBar: endPressureByTank.get(index),
+    };
+  });
 
   const startTime = new Date(manifestEntry.timestamp * 1000).toISOString();
   const maxDepthMeters = sampleMaxDepth > 0 ? sampleMaxDepth : closingMaxDepth;
@@ -366,7 +385,10 @@ export function parseShearwaterDive(
     gradientFactorLow: gfLow,
     gradientFactorHigh: gfHigh,
     rawDataHash,
-    parseWarnings: [],
+    parseWarnings:
+      maxObservedPressureTank >= cylinders.length
+        ? ['Additional pressure channels were present without matching gas definitions.']
+        : [],
     isPartial: false,
   };
 }
