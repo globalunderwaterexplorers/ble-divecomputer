@@ -42,6 +42,75 @@ export interface DownloadProgress {
   phase: 'manifest' | 'downloading' | 'parsing' | 'done';
 }
 
+// ===== Shearwater Configuration Snapshot Types =====
+
+/** Declares which configuration data the Shearwater driver can currently provide. */
+export interface ShearwaterCapabilities {
+  /** True if the device responded to RDBI probes beyond the 4 core identifiers. */
+  hasExtendedRdbi: boolean;
+  /** True if gradient factor settings were decoded from RDBI. */
+  hasGradientFactors: boolean;
+  /** True if a gas table was decoded from RDBI. */
+  hasGasTable: boolean;
+  /** True if AI transmitter configuration was decoded from RDBI. */
+  hasTransmitterConfig: boolean;
+  /** True if battery status was decoded from RDBI. */
+  hasBatteryStatus: boolean;
+  /** True if ambient pressure was decoded from RDBI. */
+  hasAmbientPressure: boolean;
+  /** True if deco model was decoded from RDBI. */
+  hasDecoModel: boolean;
+}
+
+/** A configured gas slot read from the device. */
+export interface ShearwaterGasSlot {
+  slot: number;
+  oxygenPercent: number;
+  heliumPercent: number;
+  enabled: boolean;
+}
+
+/** AI transmitter pairing slot. */
+export interface ShearwaterTransmitterSlot {
+  slot: number;
+  /** Raw pairing ID (0 = not paired). */
+  pairingId: number;
+  /** True if a transmitter is paired to this slot. */
+  paired: boolean;
+}
+
+/** Structured configuration snapshot from a connected Shearwater device. */
+export interface ShearwaterConfigSnapshot {
+  capturedAt: string;
+  capabilities: ShearwaterCapabilities;
+
+  // Device identity (always available after connect)
+  serial: string;
+  firmware: string;
+  hardware: string;
+  model: string;
+  modelId: number;
+
+  // Battery and environment (from RDBI, may be unavailable)
+  batteryPercent?: number;
+  batteryVoltageMillivolts?: number;
+  ambientPressureMbar?: number;
+
+  // Deco configuration (from RDBI, may be unavailable)
+  decoModel?: string;
+  gradientFactorLow?: number;
+  gradientFactorHigh?: number;
+
+  // Gas table (from RDBI, may be unavailable)
+  gases: ShearwaterGasSlot[];
+
+  // AI transmitter pairings (from RDBI, may be unavailable)
+  transmitters: ShearwaterTransmitterSlot[];
+
+  // Raw RDBI probe results for all identifiers that responded
+  rawRecords: ShearwaterRdbiProbeRecord[];
+}
+
 // ===== Dive Data Types =====
 
 export type DiveLogFormat = 'UDDF' | 'SUBSURFACE' | 'SUUNTO_SDE' | 'SUUNTO_SML' | 'SHEARWATER' | 'SHEARWATER_BLE';

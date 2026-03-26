@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { ShearwaterProtocol } from '../src/shearwater-protocol';
 import {
   CMD_RDBI_RESPONSE,
+  CMD_NAK,
   LOG_BLOCK_RESPONSE,
   LOG_INIT_RESPONSE,
   LOG_QUIT_RESPONSE,
@@ -9,7 +10,19 @@ import {
   MANIFEST_ENTRY_SIZE,
   MANIFEST_SIZE,
   MANIFEST_VALID,
+  RDBI_SERIAL,
+  RDBI_FIRMWARE,
+  RDBI_HARDWARE,
+  RDBI_LOGUPLOAD,
+  RDBI_BATTERY,
+  RDBI_AMBIENT_PRESSURE,
+  RDBI_GF_CONFIG,
+  RDBI_DECO_MODEL,
+  RDBI_GAS_TABLE,
+  RDBI_AI_T1_CONFIG,
+  RDBI_AI_T2_CONFIG,
 } from '../src/constants';
+import type { ShearwaterDeviceInfo } from '../src/types';
 
 const RECORD_COUNT = MANIFEST_SIZE / MANIFEST_ENTRY_SIZE;
 
@@ -221,5 +234,144 @@ describe('ShearwaterProtocol.getManifest', () => {
       label: 'Firmware',
       ascii: 'V99',
     });
+  });
+});
+
+function rdbiResponse(id: number, ...data: number[]): Uint8Array {
+  return new Uint8Array([CMD_RDBI_RESPONSE, (id >> 8) & 0xff, id & 0xff, ...data]);
+}
+
+function rdbiNak(id: number): Uint8Array {
+  return new Uint8Array([CMD_NAK, 0x22, 0x31]);
+}
+
+const testDeviceInfo: ShearwaterDeviceInfo = {
+  serial: '12345',
+  firmware: 'V99',
+  hardware: 'Perdix 2',
+  model: 'Perdix 2',
+  modelId: 11,
+};
+
+describe('ShearwaterProtocol.getConfigurationSnapshot', () => {
+  function createSnapshotBle(knownResponses: Map<number, number[]>): MockBle {
+    // Build responses for probeRdbiRange(0x8000, 0x805f) — 96 RDBI requests
+    const responses: Uint8Array[] = [];
+    for (let id = 0x8000; id <= 0x805f; id++) {
+      const data = knownResponses.get(id);
+      if (data) {
+        responses.push(rdbiResponse(id, ...data));
+      } else {
+        // NAK for unknown identifiers — probeRdbiRange catches errors
+        responses.push(rdbiNak(id));
+      }
+    }
+    return new MockBle(responses);
+  }
+
+  it('decodes GF, deco model, gas table, and transmitter pairings', async () => {
+    const known = new Map<number, number[]>();
+    // Core 4
+    known.set(RDBI_SERIAL, [0x31, 0x32, 0x33, 0x34, 0x35]); // "12345"
+    known.set(RDBI_FIRMWARE, [0x56, 0x39, 0x39]); // "V99"
+    known.set(RDBI_LOGUPLOAD, [0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    known.set(RDBI_HARDWARE, [11, 0x02]); // modelId=11, rev=2
+    // Battery: 3900mV, 85%
+    known.set(RDBI_BATTERY, [0x0F, 0x3C, 85]);
+    // Ambient pressure: 1013 mbar
+    known.set(RDBI_AMBIENT_PRESSURE, [0x03, 0xF5]);
+    // GF: 30/70
+    known.set(RDBI_GF_CONFIG, [30, 70]);
+    // Deco model: Bühlmann (0)
+    known.set(RDBI_DECO_MODEL, [0]);
+    // Gas table: Air enabled, EAN50 enabled, Trimix 18/45 disabled
+    known.set(RDBI_GAS_TABLE, [21, 0, 0x01, 50, 0, 0x01, 18, 45, 0x00]);
+    // T1: pairing ID 0x00112233
+    known.set(RDBI_AI_T1_CONFIG, [0x00, 0x11, 0x22, 0x33]);
+    // T2: not paired
+    known.set(RDBI_AI_T2_CONFIG, [0x00, 0x00, 0x00, 0x00]);
+
+    const ble = createSnapshotBle(known);
+    const protocol = new ShearwaterProtocol(ble as any);
+    const snapshot = await protocol.getConfigurationSnapshot(testDeviceInfo);
+
+    // Capabilities
+    expect(snapshot.capabilities.hasExtendedRdbi).toBe(true);
+    expect(snapshot.capabilities.hasBatteryStatus).toBe(true);
+    expect(snapshot.capabilities.hasAmbientPressure).toBe(true);
+    expect(snapshot.capabilities.hasGradientFactors).toBe(true);
+    expect(snapshot.capabilities.hasDecoModel).toBe(true);
+    expect(snapshot.capabilities.hasGasTable).toBe(true);
+    expect(snapshot.capabilities.hasTransmitterConfig).toBe(true);
+
+    // Battery
+    expect(snapshot.batteryVoltageMillivolts).toBe(3900);
+    expect(snapshot.batteryPercent).toBe(85);
+
+    // Ambient pressure
+    expect(snapshot.ambientPressureMbar).toBe(1013);
+
+    // GF
+    expect(snapshot.gradientFactorLow).toBe(30);
+    expect(snapshot.gradientFactorHigh).toBe(70);
+
+    // Deco model
+    expect(snapshot.decoModel).toBe('Bühlmann ZHL-16C');
+
+    // Gas table
+    expect(snapshot.gases).toHaveLength(3);
+    expect(snapshot.gases[0]).toMatchObject({ slot: 0, oxygenPercent: 21, heliumPercent: 0, enabled: true });
+    expect(snapshot.gases[1]).toMatchObject({ slot: 1, oxygenPercent: 50, heliumPercent: 0, enabled: true });
+    expect(snapshot.gases[2]).toMatchObject({ slot: 2, oxygenPercent: 18, heliumPercent: 45, enabled: false });
+
+    // Transmitters
+    expect(snapshot.transmitters).toHaveLength(2);
+    expect(snapshot.transmitters[0]).toMatchObject({ slot: 0, pairingId: 0x00112233, paired: true });
+    expect(snapshot.transmitters[1]).toMatchObject({ slot: 1, pairingId: 0, paired: false });
+
+    // Raw records include all successful probes
+    expect(snapshot.rawRecords.length).toBeGreaterThanOrEqual(11);
+  });
+
+  it('handles minimal probe with only core 4 identifiers', async () => {
+    const known = new Map<number, number[]>();
+    known.set(RDBI_SERIAL, [0x31, 0x32, 0x33, 0x34, 0x35]);
+    known.set(RDBI_FIRMWARE, [0x56, 0x39, 0x39]);
+    known.set(RDBI_LOGUPLOAD, [0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    known.set(RDBI_HARDWARE, [11, 0x02]);
+
+    const ble = createSnapshotBle(known);
+    const protocol = new ShearwaterProtocol(ble as any);
+    const snapshot = await protocol.getConfigurationSnapshot(testDeviceInfo);
+
+    expect(snapshot.capabilities.hasExtendedRdbi).toBe(false);
+    expect(snapshot.capabilities.hasGradientFactors).toBe(false);
+    expect(snapshot.capabilities.hasGasTable).toBe(false);
+    expect(snapshot.capabilities.hasTransmitterConfig).toBe(false);
+    expect(snapshot.capabilities.hasBatteryStatus).toBe(false);
+    expect(snapshot.capabilities.hasDecoModel).toBe(false);
+
+    expect(snapshot.gases).toHaveLength(0);
+    expect(snapshot.transmitters).toHaveLength(0);
+    expect(snapshot.gradientFactorLow).toBeUndefined();
+    expect(snapshot.decoModel).toBeUndefined();
+
+    expect(snapshot.rawRecords).toHaveLength(4);
+  });
+
+  it('decodes VPM-B deco model', async () => {
+    const known = new Map<number, number[]>();
+    known.set(RDBI_SERIAL, [0x31]);
+    known.set(RDBI_FIRMWARE, [0x56]);
+    known.set(RDBI_LOGUPLOAD, [0x00, 0x80, 0x00, 0x00, 0x00]);
+    known.set(RDBI_HARDWARE, [11]);
+    known.set(RDBI_DECO_MODEL, [1]); // VPM-B
+
+    const ble = createSnapshotBle(known);
+    const protocol = new ShearwaterProtocol(ble as any);
+    const snapshot = await protocol.getConfigurationSnapshot(testDeviceInfo);
+
+    expect(snapshot.decoModel).toBe('VPM-B');
+    expect(snapshot.capabilities.hasDecoModel).toBe(true);
   });
 });

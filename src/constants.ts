@@ -14,11 +14,20 @@ export const CMD_RDBI_REQUEST = 0x22;
 export const CMD_RDBI_RESPONSE = 0x62;
 export const CMD_NAK = 0x7f;
 
-// RDBI data identifiers
+// RDBI data identifiers — core (used by libdivecomputer)
 export const RDBI_SERIAL = 0x8010;
 export const RDBI_FIRMWARE = 0x8011;
 export const RDBI_LOGUPLOAD = 0x8021;
 export const RDBI_HARDWARE = 0x8050;
+
+// RDBI data identifiers — configuration (discovered via probing)
+export const RDBI_BATTERY = 0x8031;
+export const RDBI_AMBIENT_PRESSURE = 0x8032;
+export const RDBI_GF_CONFIG = 0x8040;
+export const RDBI_DECO_MODEL = 0x8041;
+export const RDBI_GAS_TABLE = 0x8042;
+export const RDBI_AI_T1_CONFIG = 0x8043;
+export const RDBI_AI_T2_CONFIG = 0x8044;
 
 // Log download commands (direct, not WDBI-wrapped)
 export const LOG_INIT = 0x35;
