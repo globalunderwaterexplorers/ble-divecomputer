@@ -338,6 +338,12 @@ var _diag = (...args) => {
   if (_diagnosticsEnabled) console.error(...args);
 };
 var MANIFEST_RECORD_COUNT = MANIFEST_SIZE / MANIFEST_ENTRY_SIZE;
+var KNOWN_RDBI_LABELS = {
+  [RDBI_SERIAL]: "Serial",
+  [RDBI_FIRMWARE]: "Firmware",
+  [RDBI_LOGUPLOAD]: "Log upload base address",
+  [RDBI_HARDWARE]: "Hardware"
+};
 var ShearwaterProtocol = class {
   constructor(ble) {
     this.ble = ble;
@@ -510,6 +516,13 @@ var ShearwaterProtocol = class {
   getManifestPageSignature(data) {
     return Array.from(data, (byte) => byte.toString(16).padStart(2, "0")).join("");
   }
+  toHex(data) {
+    return Array.from(data, (byte) => byte.toString(16).padStart(2, "0")).join(" ");
+  }
+  decodeAsciiPreview(data) {
+    const ascii = Array.from(data).map((byte) => byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : ".").join("").replace(/\.+$/g, "").trim();
+    return ascii ? ascii : void 0;
+  }
   /**
    * Diagnose download parameters by trying all combinations of
    * address, size, and compression to find what the device accepts.
@@ -580,6 +593,28 @@ var ShearwaterProtocol = class {
     this.transferActive = true;
     _info(`Download dive #${entry.diveNumber}: addr=0x${addr.toString(16)}`);
     return this.readMemory(addr, DIVE_SIZE, true, onProgress);
+  }
+  /**
+   * Probe a range of RDBI identifiers and return successful responses.
+   * This is read-only discovery for Shearwater capability/config exploration.
+   */
+  async probeRdbiRange(startId = 32768, endId = 32863) {
+    const records = [];
+    for (let id = startId; id <= endId; id++) {
+      try {
+        const data = await this.rdbi(id);
+        records.push({
+          id,
+          label: KNOWN_RDBI_LABELS[id],
+          length: data.length,
+          data,
+          hex: this.toHex(data),
+          ascii: this.decodeAsciiPreview(data)
+        });
+      } catch {
+      }
+    }
+    return records;
   }
   /**
    * Send an RDBI (Read Data By Identifier) request.
@@ -859,6 +894,9 @@ function parseShearwaterDive(raw, deviceInfo, manifestEntry) {
   const modelName = DEVICE_MODELS[modelFromDive] ?? deviceInfo.model;
   const samples = [];
   const events = [];
+  const startPressureByTank = /* @__PURE__ */ new Map();
+  const endPressureByTank = /* @__PURE__ */ new Map();
+  let maxObservedPressureTank = -1;
   let currentTime = 0;
   let maxTemp = -999;
   let minTemp = 999;
@@ -929,16 +967,29 @@ function parseShearwaterDive(raw, deviceInfo, manifestEntry) {
     if (logVersion >= 7 && petrel) {
       const pressureOffsets = [27, 19];
       const count = recordType === REC_AVELO_SAMPLE ? 1 : 2;
+      const tankPressures = [];
       for (let i = 0; i < count; i++) {
         const pressureRaw = raw[offset + pnf + pressureOffsets[i]] << 8 | raw[offset + pnf + pressureOffsets[i] + 1];
         if (pressureRaw > 0 && pressureRaw < 65520) {
           const pressurePsi = (pressureRaw & 4095) * 2;
           if (pressurePsi > 0) {
+            const pressureBar = psiToBar(pressurePsi);
+            tankPressures.push({ tank: i, bar: pressureBar });
+            if (!startPressureByTank.has(i)) {
+              startPressureByTank.set(i, pressureBar);
+            }
+            endPressureByTank.set(i, pressureBar);
+            if (i > maxObservedPressureTank) {
+              maxObservedPressureTank = i;
+            }
             if (sample.pressureBar == null) {
-              sample.pressureBar = psiToBar(pressurePsi);
+              sample.pressureBar = pressureBar;
             }
           }
         }
+      }
+      if (tankPressures.length > 0) {
+        sample.tankPressures = tankPressures;
       }
     }
     const decoStopRaw = raw[offset + pnf + 2] << 8 | raw[offset + pnf + 3];
@@ -977,17 +1028,20 @@ function parseShearwaterDive(raw, deviceInfo, manifestEntry) {
     }
     samples.push(sample);
   }
-  const firstGas = gasMixes.length > 0 ? gasMixes[0] : { o2: 21, he: 0 };
-  const gasMix = {
-    oxygen: firstGas.o2 / 100,
-    helium: firstGas.he / 100,
-    nitrogen: Math.max(0, 1 - firstGas.o2 / 100 - firstGas.he / 100),
-    name: formatGasName(firstGas.o2, firstGas.he)
-  };
-  const cylinders = [{
-    index: 0,
-    gasMix
-  }];
+  const cylinders = (gasMixes.length > 0 ? gasMixes : [{ o2: 21, he: 0 }]).map((mix, index) => {
+    const gasMix = {
+      oxygen: mix.o2 / 100,
+      helium: mix.he / 100,
+      nitrogen: Math.max(0, 1 - mix.o2 / 100 - mix.he / 100),
+      name: formatGasName(mix.o2, mix.he)
+    };
+    return {
+      index,
+      gasMix,
+      startPressureBar: startPressureByTank.get(index),
+      endPressureBar: endPressureByTank.get(index)
+    };
+  });
   const startTime = new Date(manifestEntry.timestamp * 1e3).toISOString();
   const maxDepthMeters = sampleMaxDepth > 0 ? sampleMaxDepth : closingMaxDepth;
   const durationSeconds = samples.length > 0 ? Math.round(samples[samples.length - 1].timeSeconds) : closingDuration;
@@ -1019,7 +1073,7 @@ function parseShearwaterDive(raw, deviceInfo, manifestEntry) {
     gradientFactorLow: gfLow,
     gradientFactorHigh: gfHigh,
     rawDataHash,
-    parseWarnings: [],
+    parseWarnings: maxObservedPressureTank >= cylinders.length ? ["Additional pressure channels were present without matching gas definitions."] : [],
     isPartial: false
   };
 }

@@ -42,6 +42,7 @@ export {
 } from './constants';
 export type {
   ShearwaterDeviceInfo,
+  ShearwaterRdbiProbeRecord,
   ManifestEntry,
   BleConnectionState,
   DownloadProgress,

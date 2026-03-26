@@ -199,4 +199,27 @@ describe('ShearwaterProtocol.getManifest', () => {
     expect(manifest).toHaveLength(RECORD_COUNT);
     expect(ble.commands.filter(command => command[0] === 0x35)).toHaveLength(2);
   });
+
+  it('probes successful RDBI identifiers in a range', async () => {
+    const ble = new MockBle([
+      new Uint8Array([CMD_RDBI_RESPONSE, 0x80, 0x10, 0x31, 0x32, 0x33, 0x34, 0x35]),
+      new Uint8Array([CMD_RDBI_RESPONSE, 0x80, 0x11, 0x56, 0x39, 0x39]),
+    ]);
+    const protocol = new ShearwaterProtocol(ble as any);
+
+    const records = await protocol.probeRdbiRange(0x8010, 0x8011);
+
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({
+      id: 0x8010,
+      label: 'Serial',
+      length: 5,
+      ascii: '12345',
+    });
+    expect(records[1]).toMatchObject({
+      id: 0x8011,
+      label: 'Firmware',
+      ascii: 'V99',
+    });
+  });
 });

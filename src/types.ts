@@ -8,6 +8,15 @@ export interface ShearwaterDeviceInfo {
   modelId: number;
 }
 
+export interface ShearwaterRdbiProbeRecord {
+  id: number;
+  label?: string;
+  length: number;
+  data: Uint8Array;
+  hex: string;
+  ascii?: string;
+}
+
 export interface ManifestEntry {
   index: number;
   diveNumber: number;  // dive sequence number from computer

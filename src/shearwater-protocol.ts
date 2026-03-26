@@ -19,7 +19,7 @@ import {
   MANIFEST_DELETED,
   DEVICE_MODELS,
 } from './constants';
-import type { ShearwaterDeviceInfo, ManifestEntry } from './types';
+import type { ShearwaterDeviceInfo, ManifestEntry, ShearwaterRdbiProbeRecord } from './types';
 import { ShearwaterBle } from './shearwater-ble';
 
 /**
@@ -47,6 +47,12 @@ const _diag = (...args: any[]) => {
   if (_diagnosticsEnabled) console.error(...args);
 };
 const MANIFEST_RECORD_COUNT = MANIFEST_SIZE / MANIFEST_ENTRY_SIZE;
+const KNOWN_RDBI_LABELS: Record<number, string> = {
+  [RDBI_SERIAL]: 'Serial',
+  [RDBI_FIRMWARE]: 'Firmware',
+  [RDBI_LOGUPLOAD]: 'Log upload base address',
+  [RDBI_HARDWARE]: 'Hardware',
+};
 
 export class ShearwaterProtocol {
   private baseAddr = 0;
@@ -277,6 +283,19 @@ export class ShearwaterProtocol {
     return Array.from(data, byte => byte.toString(16).padStart(2, '0')).join('');
   }
 
+  private toHex(data: Uint8Array): string {
+    return Array.from(data, byte => byte.toString(16).padStart(2, '0')).join(' ');
+  }
+
+  private decodeAsciiPreview(data: Uint8Array): string | undefined {
+    const ascii = Array.from(data)
+      .map(byte => (byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : '.'))
+      .join('')
+      .replace(/\.+$/g, '')
+      .trim();
+    return ascii ? ascii : undefined;
+  }
+
   /**
    * Diagnose download parameters by trying all combinations of
    * address, size, and compression to find what the device accepts.
@@ -358,6 +377,32 @@ export class ShearwaterProtocol {
     this.transferActive = true;
     _info(`Download dive #${entry.diveNumber}: addr=0x${addr.toString(16)}`);
     return this.readMemory(addr, DIVE_SIZE, true, onProgress);
+  }
+
+  /**
+   * Probe a range of RDBI identifiers and return successful responses.
+   * This is read-only discovery for Shearwater capability/config exploration.
+   */
+  async probeRdbiRange(startId = 0x8000, endId = 0x805f): Promise<ShearwaterRdbiProbeRecord[]> {
+    const records: ShearwaterRdbiProbeRecord[] = [];
+
+    for (let id = startId; id <= endId; id++) {
+      try {
+        const data = await this.rdbi(id);
+        records.push({
+          id,
+          label: KNOWN_RDBI_LABELS[id],
+          length: data.length,
+          data,
+          hex: this.toHex(data),
+          ascii: this.decodeAsciiPreview(data),
+        });
+      } catch {
+        // Skip unsupported or unreadable identifiers.
+      }
+    }
+
+    return records;
   }
 
   /**
