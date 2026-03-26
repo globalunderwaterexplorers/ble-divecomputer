@@ -49,7 +49,9 @@ function buildPnfDive(): Uint8Array {
 
   const opening4 = RECORD_SIZE * 3;
   raw[opening4] = 0x14;
+  raw[opening4 + 1] = 1; // dive mode: M_OC_TEC
   raw[opening4 + 16] = 9; // log version
+  setUint16(raw, opening4 + 17, 0x0003); // gas enabled bitmap: slots 0 + 1 enabled
   raw[opening4 + 28] = 0; // AI mode off
 
   const closing0 = RECORD_SIZE * 4;
@@ -134,14 +136,13 @@ describe('parseShearwaterDive', () => {
   });
 
   it('marks pressure sources as unmapped when no matching gas exists', () => {
-    // Build a dive with only 1 gas but 2 pressure channels
     const raw = buildPnfDive();
-    // Zero out the second gas (O2 at opening0 + 21)
-    raw[21] = 0;
+    raw[21] = 0; // Zero out second gas O2
+    // Update bitmap to only enable slot 0
+    setUint16(raw, RECORD_SIZE * 3 + 17, 0x0001);
 
     const parsed = parseShearwaterDive(raw, deviceInfo, manifestEntry);
 
-    // Only 1 gas mix → T2 has no matching cylinder
     expect(parsed.cylinders).toHaveLength(1);
     expect(parsed.pressureSources).toHaveLength(2);
 
@@ -149,5 +150,69 @@ describe('parseShearwaterDive', () => {
     expect(t2.gasIndex).toBeUndefined();
     expect(t2.gasName).toBeUndefined();
     expect(t2.confidence).toBe('unmapped');
+  });
+
+  it('exposes gas enabled state and slot index', () => {
+    const parsed = parseShearwaterDive(buildPnfDive(), deviceInfo, manifestEntry);
+
+    expect(parsed.cylinders[0]?.gasMix.enabled).toBe(true);
+    expect(parsed.cylinders[0]?.gasMix.slotIndex).toBe(0);
+    expect(parsed.cylinders[0]?.gasMix.usage).toBe('none');
+
+    expect(parsed.cylinders[1]?.gasMix.enabled).toBe(true);
+    expect(parsed.cylinders[1]?.gasMix.slotIndex).toBe(1);
+  });
+
+  it('reads dive mode from OPENING_4 header', () => {
+    const parsed = parseShearwaterDive(buildPnfDive(), deviceInfo, manifestEntry);
+    expect(parsed.diveMode).toBe('OC');
+  });
+
+  it('marks diluent gases on CCR dives', () => {
+    const raw = buildPnfDive();
+    // Set dive mode to CCR (M_CC = 0)
+    raw[RECORD_SIZE * 3 + 1] = 0;
+    // Enable gas slots 0 (OC) and 5 (diluent)
+    raw[RECORD_SIZE * 0 + 25] = 32; // slot 5 O2 = 32%
+    setUint16(raw, RECORD_SIZE * 3 + 17, 0x0021); // bits 0 + 5
+
+    // Set sample status to CCR (OC flag clear)
+    raw[RECORD_SIZE * 5 + 12] = 0x00; // CCR
+    raw[RECORD_SIZE * 6 + 12] = 0x00; // CCR
+
+    const parsed = parseShearwaterDive(raw, deviceInfo, manifestEntry);
+
+    expect(parsed.diveMode).toBe('CCR');
+    const diluentGas = parsed.cylinders.find(c => c.gasMix.slotIndex === 5);
+    expect(diluentGas).toBeDefined();
+    expect(diluentGas!.gasMix.usage).toBe('diluent');
+    expect(diluentGas!.gasMix.enabled).toBe(true);
+  });
+
+  it('excludes disabled non-active gases', () => {
+    const raw = buildPnfDive();
+    // Add a third gas (slot 2, O2=100) but don't enable it in bitmap
+    raw[RECORD_SIZE * 0 + 22] = 100;
+    // Bitmap still 0x0003 = only slots 0,1 enabled. Slot 2 not active either.
+    const parsed = parseShearwaterDive(raw, deviceInfo, manifestEntry);
+    // Slot 2 (O2=100) should NOT appear — not enabled and not active
+    expect(parsed.cylinders).toHaveLength(2);
+  });
+
+  it('extracts VPM-B conservatism', () => {
+    const raw = buildPnfDive();
+    // Set deco model to VPM-B (byte 18 of OPENING_2)
+    raw[RECORD_SIZE * 2 + 18] = 1; // VPMB
+    raw[RECORD_SIZE * 2 + 19] = 3; // conservatism level 3
+
+    const parsed = parseShearwaterDive(raw, deviceInfo, manifestEntry);
+
+    expect(parsed.decoModel).toBe('VPM-B');
+    expect(parsed.vpmbConservatism).toBe(3);
+  });
+
+  it('reports units field', () => {
+    const parsed = parseShearwaterDive(buildPnfDive(), deviceInfo, manifestEntry);
+    expect(parsed.units).toBe('metric');
   });
 });

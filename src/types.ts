@@ -121,6 +121,9 @@ export interface DiveGasMix {
   helium: number;   // fraction 0.0-1.0 (0 for non-trimix)
   nitrogen: number; // computed: 1 - oxygen - helium
   name?: string;    // human-readable: "Air", "EAN32", "Trimix 18/45"
+  usage?: 'none' | 'diluent' | 'oxygen' | 'sidemount';
+  enabled?: boolean;
+  slotIndex?: number; // original 0-9 slot in the Shearwater gas table
 }
 
 /** Cylinder / tank configuration */
@@ -132,6 +135,11 @@ export interface DiveCylinder {
   startPressureBar?: number;
   endPressureBar?: number;
   gasMix: DiveGasMix;
+  tankSerial?: number;
+  tankName?: string;           // 2-char label from Shearwater: "T1", "O2", "Di"
+  maxPressureBar?: number;
+  reservePressureBar?: number;
+  tankEnabled?: boolean;
 }
 
 /** Pressure source / transmitter channel metadata derived from dive data. */
@@ -248,6 +256,8 @@ export interface ParsedDive {
   decoModel?: string;
   gradientFactorLow?: number;
   gradientFactorHigh?: number;
+  vpmbConservatism?: number;
+  units?: 'metric' | 'imperial';
   maxCnsPercent?: number;
   totalOtu?: number;
   decoStops?: Array<{ depthMeters: number; durationSeconds: number }>;

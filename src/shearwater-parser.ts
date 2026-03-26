@@ -1,5 +1,5 @@
 import type { ShearwaterDeviceInfo, ManifestEntry } from './types';
-import type { ParsedDive, DiveSample, DiveCylinder, DiveGasMix, DiveEvent, PressureSource } from './types';
+import type { ParsedDive, DiveSample, DiveCylinder, DiveGasMix, DiveEvent, PressureSource, DiveSiteInfo } from './types';
 import { DEVICE_MODELS } from './constants';
 
 /**
@@ -22,9 +22,6 @@ const REC_DIVE_SAMPLE = 0x01;
 const REC_FREEDIVE_SAMPLE = 0x02;
 const REC_AVELO_SAMPLE = 0x03;
 const REC_OPENING_0 = 0x10;
-const REC_OPENING_1 = 0x11;
-const REC_OPENING_4 = 0x14;
-const REC_OPENING_5 = 0x15;
 const REC_CLOSING_0 = 0x20;
 const REC_INFO_EVENT = 0x30;
 const REC_SAMPLE_EXT = 0xE1;
@@ -33,11 +30,21 @@ const REC_FINAL = 0xFF;
 // Status flags
 const OC_FLAG = 0x10;
 const SC_FLAG = 0x08;
-const GASSWITCH_FLAG = 0x01;
 
 // AI modes
 const AI_OFF = 0;
 const AI_HPCCR = 4;
+const AI_ON_GPS = 6;
+
+// Dive mode enum (from OPENING_4 byte 1, logversion >= 8)
+const M_CC = 0;
+const M_OC_TEC = 1;
+const M_GAUGE = 2;
+const M_PPO2 = 3;
+const M_SC = 4;
+const M_CC2 = 5;
+const M_OC_REC = 6;
+const M_FREEDIVE = 7;
 
 // Deco model types
 const GF = 0;
@@ -45,7 +52,56 @@ const VPMB = 1;
 const VPMB_GFS = 2;
 const DCIEM = 3;
 
+// Teric model ID
+const TERIC = 8;
+
 const NFIXED = 10;
+const NTANKS = 6;
+const FEET = 0.3048;
+
+interface ParsedGasSlot {
+  slotIndex: number;
+  o2: number;
+  he: number;
+  diluent: boolean;
+  enabled: boolean;
+  active: boolean;
+}
+
+interface ParsedTank {
+  enabled: boolean;
+  active: boolean;
+  beginPressure: number;
+  endPressure: number;
+  maxPressure: number;
+  reservePressure: number;
+  serial: number;
+  name: string;
+  usage: 'none' | 'diluent' | 'oxygen' | 'sidemount';
+}
+
+function isCcrMode(mode: number): boolean {
+  return mode === M_CC || mode === M_CC2 || mode === M_SC;
+}
+
+function mapDiveMode(mode: number): 'OC' | 'CCR' | 'SCR' | 'GAUGE' | 'FREEDIVE' {
+  switch (mode) {
+    case M_CC:
+    case M_CC2:
+      return 'CCR';
+    case M_SC:
+      return 'SCR';
+    case M_GAUGE:
+    case M_PPO2:
+      return 'GAUGE';
+    case M_FREEDIVE:
+      return 'FREEDIVE';
+    case M_OC_TEC:
+    case M_OC_REC:
+    default:
+      return 'OC';
+  }
+}
 
 export function parseShearwaterDive(
   raw: Uint8Array,
@@ -62,151 +118,284 @@ export function parseShearwaterDive(
   const sampleSize = petrel ? SZ_SAMPLE_PETREL : SZ_SAMPLE_PREDATOR;
 
   // ===== PHASE 1: Scan all records to find opening/closing/final positions =====
-  // This mirrors libdivecomputer's shearwater_predator_parser_cache()
   const opening: (number | undefined)[] = new Array(10).fill(undefined);
   const closing: (number | undefined)[] = new Array(10).fill(undefined);
   let finalOffset: number | undefined;
   let logVersion = 0;
   let aiMode = AI_OFF;
-  let sampleInterval = 10; // Default 10 seconds
+  let sampleInterval = 10;
 
-  if (pnf) {
-    // PNF: scan all records to find opening/closing/final
-    for (let offset = 0; offset + sampleSize <= raw.length; offset += sampleSize) {
-      if (isAllZero(raw, offset, sampleSize)) continue;
-      const recordType = raw[offset];
+  // Gas slot state — all 10 fixed slots
+  const gasSlots: ParsedGasSlot[] = Array.from({ length: NFIXED }, (_, i) => ({
+    slotIndex: i,
+    o2: 0,
+    he: 0,
+    diluent: i >= 5,
+    enabled: !pnf, // legacy format: all enabled by default
+    active: false,
+  }));
 
-      if (recordType >= REC_OPENING_0 && recordType <= REC_OPENING_0 + 9) {
-        opening[recordType - REC_OPENING_0] = offset;
-      } else if (recordType >= REC_CLOSING_0 && recordType <= REC_CLOSING_0 + 9) {
-        closing[recordType - REC_CLOSING_0] = offset;
-      } else if (recordType === REC_FINAL) {
-        finalOffset = offset;
-      }
-    }
+  // Tank state — up to 6 tanks
+  const tanks: ParsedTank[] = Array.from({ length: NTANKS }, () => ({
+    enabled: false,
+    active: false,
+    beginPressure: 0,
+    endPressure: 0,
+    maxPressure: 0,
+    reservePressure: 0,
+    serial: 0,
+    name: '',
+    usage: 'none' as const,
+  }));
 
-    // Log version from OPENING_4 byte 16
-    if (opening[4] != null) {
-      logVersion = raw[opening[4] + 16];
-    }
+  let headerDiveMode = M_OC_TEC;
+  let hpccr = false;
 
-    // AI mode from OPENING_4 byte 28
-    if (opening[4] != null && logVersion >= 7) {
-      aiMode = raw[opening[4] + 28];
-    }
-
-    // Sample interval from OPENING_5 byte 23
-    if (logVersion >= 9 && opening[5] != null) {
-      const intervalRaw = (raw[opening[5] + 23] << 8) | raw[opening[5] + 24];
-      if (intervalRaw > 0 && intervalRaw <= 60000) {
-        sampleInterval = intervalRaw / 1000; // ms → seconds
-      }
-    }
-  } else {
-    // Legacy format: single 128-byte opening block at start
+  if (!pnf) {
+    // Legacy format: single 128-byte opening block
     for (let i = 0; i <= 4; i++) {
       opening[i] = 0;
     }
     logVersion = raw[127];
-    // Footer: last 128 bytes (or 256 if petrel with final block)
     if (petrel) {
       finalOffset = raw.length - SZ_BLOCK;
     }
-  }
-
-  // ===== PHASE 2: Parse gas mixes from opening records =====
-  const gasMixes = parseGasMixes(raw, pnf, opening);
-
-  // ===== PHASE 3: Parse deco model + GF from opening records =====
-  let decoModel: string | undefined;
-  let gfLow: number | undefined;
-  let gfHigh: number | undefined;
-  if (opening[2] != null && opening[0] != null) {
-    const decomodelIdx = pnf ? opening[2] + 18 : 67;
-    const gfIdx = pnf ? opening[0] + 4 : 4;
-    const modelByte = raw[decomodelIdx];
-    if (modelByte === GF) {
-      decoModel = 'Bühlmann ZHL-16C';
-      gfLow = raw[gfIdx];
-      gfHigh = raw[gfIdx + 1];
-    } else if (modelByte === VPMB || modelByte === VPMB_GFS) {
-      decoModel = modelByte === VPMB ? 'VPM-B' : 'VPM-B/GFS';
-    } else if (modelByte === DCIEM) {
-      decoModel = 'DCIEM';
+    // Legacy gas table
+    for (let i = 0; i < NFIXED; i++) {
+      gasSlots[i].o2 = raw[20 + i];
+      gasSlots[i].he = raw[30 + i];
+      gasSlots[i].diluent = i >= 5;
+      gasSlots[i].enabled = true;
     }
   }
 
-  // ===== PHASE 4: Parse closing block for max depth / duration =====
-  let closingMaxDepth = 0;
-  let closingDuration = 0;
-  if (closing[0] != null) {
-    const co = closing[0];
-    const maxDepthRaw = (raw[co + 4] << 8) | raw[co + 5];
-    closingMaxDepth = maxDepthRaw / 10;
-    if (pnf) {
-      closingDuration = (raw[co + 6] << 16) | (raw[co + 7] << 8) | raw[co + 8];
-    } else {
-      closingDuration = ((raw[co + 6] << 8) | raw[co + 7]) * 60;
-    }
-  }
+  // PNF: scan records and extract opening data inline
+  let o2Previous = -1;
+  let hePrevious = -1;
+  let dilPrevious = -1;
 
-  // ===== PHASE 5: Get model from final block =====
-  let modelFromDive = deviceInfo.modelId;
-  if (finalOffset != null && finalOffset + 14 <= raw.length) {
-    modelFromDive = raw[finalOffset + 13];
-  }
-  const modelName = DEVICE_MODELS[modelFromDive] ?? deviceInfo.model;
-
-  // ===== PHASE 6: Parse samples =====
   const samples: DiveSample[] = [];
   const events: DiveEvent[] = [];
+  const sampleCountByTank = new Map<number, number>();
   const startPressureByTank = new Map<number, number>();
   const endPressureByTank = new Map<number, number>();
-  const sampleCountByTank = new Map<number, number>();
   let maxObservedPressureTank = -1;
   let currentTime = 0;
   let maxTemp = -999;
   let minTemp = 999;
   let sampleMaxDepth = 0;
-  let diveMode: 'OC' | 'CCR' | 'SCR' | 'GAUGE' | 'FREEDIVE' = 'OC';
-  let diveModeSet = false;
-  let prevO2 = -1;
-  let prevHe = -1;
 
-  for (let offset = 0; offset + sampleSize <= raw.length; offset += sampleSize) {
+  // Single pass: extract opening records + samples (matches libdivecomputer flow)
+  const headerSize = pnf ? 0 : SZ_BLOCK;
+  const footerSize = pnf ? 0 : (petrel ? SZ_BLOCK * 2 : SZ_BLOCK);
+
+  for (let offset = headerSize; offset + sampleSize <= raw.length - footerSize; offset += sampleSize) {
     if (isAllZero(raw, offset, sampleSize)) continue;
 
     const recordType = pnf ? raw[offset] : REC_DIVE_SAMPLE;
 
-    // In legacy format, skip the header/footer
-    if (!pnf) {
-      if (offset < SZ_BLOCK) continue; // header
-      if (offset >= raw.length - (petrel ? SZ_BLOCK * 2 : SZ_BLOCK)) continue; // footer
-    }
+    if (recordType >= REC_OPENING_0 && recordType <= REC_OPENING_0 + 9) {
+      const idx = recordType - REC_OPENING_0;
+      opening[idx] = offset;
 
-    if (recordType !== REC_DIVE_SAMPLE && recordType !== REC_AVELO_SAMPLE) {
-      // Handle info events
-      if (recordType === REC_INFO_EVENT && pnf) {
-        const eventType = raw[offset + 1];
-        if (eventType === 38) { // TAG_LOG = bookmark
-          events.push({
-            timeSeconds: currentTime,
-            type: 'BOOKMARK',
-            description: 'Bookmark',
-          });
+      if (idx === 0) {
+        // OPENING_0: gas O2 + first 2 He values
+        for (let i = 0; i < NFIXED; i++) {
+          gasSlots[i].o2 = raw[offset + 20 + i];
+          gasSlots[i].diluent = i >= 5;
+        }
+        for (let i = 0; i < 2; i++) {
+          gasSlots[i].he = raw[offset + 30 + i];
+        }
+      } else if (idx === 1) {
+        // OPENING_1: He for gas 2-9
+        for (let i = 2; i < NFIXED; i++) {
+          gasSlots[i].he = raw[offset + 1 + i - 2];
+        }
+      } else if (idx === 4) {
+        // OPENING_4: log version, gas enabled bitmap, AI mode, dive mode, GTR mode
+        logVersion = raw[offset + 16];
+
+        // Gas enabled bitmap (bytes 17-18)
+        const enabledBitmap = (raw[offset + 17] << 8) | raw[offset + 18];
+        for (let i = 0; i < NFIXED; i++) {
+          gasSlots[i].enabled = (enabledBitmap & (1 << i)) !== 0;
+        }
+
+        // AI mode
+        if (logVersion >= 7) {
+          aiMode = raw[offset + 28];
+          if (logVersion < 13) {
+            if (aiMode === 1 || aiMode === 2) {
+              tanks[aiMode - 1].enabled = true;
+            } else if (aiMode === 3) {
+              tanks[0].enabled = true;
+              tanks[1].enabled = true;
+            }
+          }
+          if (logVersion < 14) {
+            if (aiMode === AI_HPCCR) {
+              tanks[4].enabled = true;
+              tanks[4].usage = 'diluent';
+              tanks[5].enabled = true;
+              tanks[5].usage = 'oxygen';
+              hpccr = true;
+            }
+          }
+        }
+
+        // GTR mode (sidemount bitmap, byte 29)
+        const gtrMode = raw[offset + 29];
+        if (popcount(gtrMode) >= 2) {
+          for (let i = 0; i < 4; i++) {
+            if (gtrMode & (1 << i)) {
+              tanks[i].usage = 'sidemount';
+            }
+          }
+        }
+
+        // Dive mode from header (logversion >= 8)
+        if (logVersion >= 8) {
+          headerDiveMode = raw[offset + (pnf ? 1 : 112)];
+        }
+      } else if (idx === 5) {
+        // OPENING_5: tank serials + pressures, sample interval
+        if (logVersion >= 9) {
+          tanks[0].serial = bcd2dec(raw, offset + 1, 3);
+          tanks[0].maxPressure = uint16BE(raw, offset + 6);
+          tanks[0].reservePressure = uint16BE(raw, offset + 8);
+
+          tanks[1].serial = bcd2dec(raw, offset + 10, 3);
+          tanks[1].maxPressure = uint16BE(raw, offset + 15);
+          tanks[1].reservePressure = uint16BE(raw, offset + 17);
+
+          const intervalRaw = uint16BE(raw, offset + 23);
+          if (intervalRaw > 0 && intervalRaw <= 60000) {
+            sampleInterval = intervalRaw / 1000;
+          }
+        }
+      } else if (idx === 6) {
+        // OPENING_6: tank 0-1 names/enabled, tank 2 serial
+        if (logVersion >= 13) {
+          tanks[0].enabled = raw[offset + 19] !== 0;
+          tanks[0].name = decodeAscii2(raw, offset + 20);
+
+          tanks[1].enabled = raw[offset + 22] !== 0;
+          tanks[1].name = decodeAscii2(raw, offset + 23);
+
+          tanks[2].serial = bcd2dec(raw, offset + 25, 3);
+          tanks[2].maxPressure = uint16BE(raw, offset + 28);
+          tanks[2].reservePressure = uint16BE(raw, offset + 30);
+        }
+      } else if (idx === 7) {
+        // OPENING_7: tank 2-3 names/enabled/serial
+        if (logVersion >= 13) {
+          tanks[2].enabled = raw[offset + 1] !== 0;
+          tanks[2].name = decodeAscii2(raw, offset + 2);
+
+          tanks[3].serial = bcd2dec(raw, offset + 4, 3);
+          tanks[3].maxPressure = uint16BE(raw, offset + 7);
+          tanks[3].reservePressure = uint16BE(raw, offset + 9);
+          tanks[3].enabled = raw[offset + 11] !== 0;
+          tanks[3].name = decodeAscii2(raw, offset + 12);
         }
       }
       continue;
     }
 
+    if (recordType >= REC_CLOSING_0 && recordType <= REC_CLOSING_0 + 9) {
+      closing[recordType - REC_CLOSING_0] = offset;
+      continue;
+    }
+
+    if (recordType === REC_FINAL) {
+      finalOffset = offset;
+      continue;
+    }
+
+    if (recordType === REC_INFO_EVENT && pnf) {
+      if (raw[offset + 1] === 38) { // TAG_LOG = bookmark
+        events.push({ timeSeconds: currentTime, type: 'BOOKMARK', description: 'Bookmark' });
+      }
+      continue;
+    }
+
+    if (recordType === REC_FREEDIVE_SAMPLE) {
+      headerDiveMode = M_FREEDIVE;
+      continue;
+    }
+
+    // Extended sample: tanks 2-5 pressure (does NOT advance time)
+    if (recordType === REC_SAMPLE_EXT && pnf) {
+      if (logVersion >= 13 && samples.length > 0) {
+        const lastSample = samples[samples.length - 1];
+        const extTankPressures = lastSample.tankPressures ? [...lastSample.tankPressures] : [];
+
+        for (let i = 0; i < 2; i++) {
+          const pressureRaw = uint16BE(raw, offset + pnf + i * 2);
+          const id = 2 + i;
+          if (pressureRaw > 0 && pressureRaw < 0xFFF0) {
+            const pressurePsi = (pressureRaw & 0x0FFF) * 2;
+            if (pressurePsi > 0) {
+              const pressureBar = psiToBar(pressurePsi);
+              extTankPressures.push({ tank: id, bar: pressureBar });
+              if (!startPressureByTank.has(id)) startPressureByTank.set(id, pressureBar);
+              endPressureByTank.set(id, pressureBar);
+              sampleCountByTank.set(id, (sampleCountByTank.get(id) ?? 0) + 1);
+              if (!tanks[id].active) {
+                tanks[id].active = true;
+                tanks[id].beginPressure = pressureRaw & 0x0FFF;
+              }
+              tanks[id].endPressure = pressureRaw & 0x0FFF;
+              if (id > maxObservedPressureTank) maxObservedPressureTank = id;
+            }
+          }
+        }
+
+        // HP CCR tanks 4-5 (logversion >= 14)
+        if (logVersion >= 14) {
+          for (let i = 0; i < 2; i++) {
+            const pressureRaw = uint16BE(raw, offset + pnf + 4 + i * 2);
+            const id = 4 + i;
+            if (pressureRaw > 0) {
+              const pressureBar = psiToBar(pressureRaw * 2);
+              extTankPressures.push({ tank: id, bar: pressureBar });
+              if (!startPressureByTank.has(id)) startPressureByTank.set(id, pressureBar);
+              endPressureByTank.set(id, pressureBar);
+              sampleCountByTank.set(id, (sampleCountByTank.get(id) ?? 0) + 1);
+              if (!tanks[id].active) {
+                tanks[id].active = true;
+                tanks[id].enabled = true;
+                tanks[id].beginPressure = pressureRaw;
+                tanks[id].usage = i === 0 ? 'diluent' : 'oxygen';
+                hpccr = true;
+              }
+              tanks[id].endPressure = pressureRaw;
+              if (id > maxObservedPressureTank) maxObservedPressureTank = id;
+            }
+          }
+        }
+
+        if (extTankPressures.length > 0) {
+          lastSample.tankPressures = extTankPressures;
+        }
+      }
+      continue;
+    }
+
+    if (recordType !== REC_DIVE_SAMPLE && recordType !== REC_AVELO_SAMPLE) {
+      continue;
+    }
+
+    // ===== DIVE SAMPLE =====
     currentTime += sampleInterval;
 
-    // Depth: 1/10 m at offset 0+pnf (big-endian uint16)
-    const depthRaw = (raw[offset + pnf] << 8) | raw[offset + pnf + 1];
+    // Depth
+    const depthRaw = uint16BE(raw, offset + pnf);
     const depthMeters = depthRaw / 10;
     if (depthMeters > sampleMaxDepth) sampleMaxDepth = depthMeters;
 
-    // Temperature: signed byte at offset 13+pnf
+    // Temperature
     let temp = toSigned8(raw[offset + pnf + 13]);
     if (temp < 0) {
       temp += 102;
@@ -217,31 +406,39 @@ export function parseShearwaterDive(
       if (temp < minTemp) minTemp = temp;
     }
 
-    // Status flags at offset 11+pnf
+    // Status flags
     const status = recordType !== REC_AVELO_SAMPLE ? raw[offset + 11 + pnf] : 0;
     const ccr = (status & OC_FLAG) === 0 && recordType !== REC_AVELO_SAMPLE;
 
-    // Detect dive mode from first sample
-    if (!diveModeSet && recordType === REC_DIVE_SAMPLE) {
-      if (ccr) {
-        diveMode = (status & SC_FLAG) ? 'SCR' : 'CCR';
-      }
-      diveModeSet = true;
+    if (ccr && headerDiveMode === M_OC_TEC) {
+      headerDiveMode = (status & SC_FLAG) ? M_SC : M_CC;
     }
 
-    // Gas change detection
+    // Gas change detection — also marks gas as active
     const o2 = raw[offset + pnf + 7];
     const he = raw[offset + pnf + 8];
-    if ((o2 !== prevO2 || he !== prevHe) && (o2 !== 0 || he !== 0) && prevO2 >= 0) {
-      events.push({
-        timeSeconds: currentTime,
-        type: 'GAS_SWITCH',
-        description: `Switch to ${formatGasName(o2, he)}`,
-      });
-    }
-    if (o2 !== 0 || he !== 0) {
-      prevO2 = o2;
-      prevHe = he;
+    const dil = ccr ? 1 : 0;
+    if ((o2 !== o2Previous || he !== hePrevious || dil !== dilPrevious) &&
+        (o2 !== 0 || he !== 0)) {
+      // Find matching gas slot
+      for (let i = 0; i < NFIXED; i++) {
+        if (gasSlots[i].o2 === o2 && gasSlots[i].he === he && gasSlots[i].diluent === (dil === 1)) {
+          gasSlots[i].active = true;
+          break;
+        }
+      }
+
+      if (o2Previous >= 0) {
+        events.push({
+          timeSeconds: currentTime,
+          type: 'GAS_SWITCH',
+          description: `Switch to ${formatGasName(o2, he)}`,
+        });
+      }
+
+      o2Previous = o2;
+      hePrevious = he;
+      dilPrevious = dil;
     }
 
     const sample: DiveSample = {
@@ -251,28 +448,27 @@ export function parseShearwaterDive(
     };
 
     // Tank pressure (logversion >= 7, Petrel class)
-    // Per libdivecomputer: idx[2] = {27, 19} — T1 at offset 27, T2 at offset 19
     if (logVersion >= 7 && petrel) {
-      const pressureOffsets = [27, 19]; // T1 primary, T2 secondary
+      const pressureOffsets = [27, 19];
       const count = recordType === REC_AVELO_SAMPLE ? 1 : 2;
       const tankPressures: Array<{ tank: number; bar: number }> = [];
       for (let i = 0; i < count; i++) {
-        const pressureRaw = (raw[offset + pnf + pressureOffsets[i]] << 8) | raw[offset + pnf + pressureOffsets[i] + 1];
-        // Values >= 0xFFF0 are special codes (AI off, no comms, not paired)
+        const pressureRaw = uint16BE(raw, offset + pnf + pressureOffsets[i]);
+        const id = (aiMode === AI_HPCCR ? 4 : 0) + i;
         if (pressureRaw > 0 && pressureRaw < 0xFFF0) {
-          const pressurePsi = (pressureRaw & 0x0FFF) * 2;
-          if (pressurePsi > 0) {
-            const pressureBar = psiToBar(pressurePsi);
-            tankPressures.push({ tank: i, bar: pressureBar });
-            if (!startPressureByTank.has(i)) {
-              startPressureByTank.set(i, pressureBar);
+          const psi = (pressureRaw & 0x0FFF) * 2;
+          if (psi > 0) {
+            const pressureBar = psiToBar(psi);
+            tankPressures.push({ tank: id, bar: pressureBar });
+            if (!startPressureByTank.has(id)) startPressureByTank.set(id, pressureBar);
+            endPressureByTank.set(id, pressureBar);
+            sampleCountByTank.set(id, (sampleCountByTank.get(id) ?? 0) + 1);
+            if (!tanks[id].active) {
+              tanks[id].active = true;
+              tanks[id].beginPressure = pressureRaw & 0x0FFF;
             }
-            endPressureByTank.set(i, pressureBar);
-            sampleCountByTank.set(i, (sampleCountByTank.get(i) ?? 0) + 1);
-            if (i > maxObservedPressureTank) {
-              maxObservedPressureTank = i;
-            }
-            // Use first valid pressure reading (T1 preferred)
+            tanks[id].endPressure = pressureRaw & 0x0FFF;
+            if (id > maxObservedPressureTank) maxObservedPressureTank = id;
             if (sample.pressureBar == null) {
               sample.pressureBar = pressureBar;
             }
@@ -284,95 +480,202 @@ export function parseShearwaterDive(
       }
     }
 
-    // Deco stop depth at offset 2+pnf (uint16, raw value = depth in meters for PNF, or tenths)
-    const decoStopRaw = (raw[offset + pnf + 2] << 8) | raw[offset + pnf + 3];
-
-    // TTS at offset 4+pnf (minutes, per libdivecomputer: tts * 60 for seconds)
-    const ttsMinutes = (raw[offset + pnf + 4] << 8) | raw[offset + pnf + 5];
-
-    // NDL/deco time at offset 9+pnf (minutes)
+    // Deco ceiling
+    const decoStopRaw = uint16BE(raw, offset + pnf + 2);
+    const ttsMinutes = uint16BE(raw, offset + pnf + 4);
     const ndlDecoMinutes = raw[offset + pnf + 9];
 
     if (decoStopRaw > 0) {
-      // In deco — decoStopRaw is depth value
       sample.ceilingMeters = decoStopRaw;
-      if (ttsMinutes > 0 && ttsMinutes < 0xFFFF) {
-        sample.ttsSeconds = ttsMinutes * 60;
-      }
+      if (ttsMinutes > 0 && ttsMinutes < 0xFFFF) sample.ttsSeconds = ttsMinutes * 60;
     } else {
-      // Not in deco — ndlDecoMinutes is NDL
-      if (ndlDecoMinutes > 0 && ndlDecoMinutes < 255) {
-        sample.ndlSeconds = ndlDecoMinutes * 60;
-      }
-      if (ttsMinutes > 0 && ttsMinutes < 0xFFFF) {
-        sample.ttsSeconds = ttsMinutes * 60;
-      }
+      if (ndlDecoMinutes > 0 && ndlDecoMinutes < 255) sample.ndlSeconds = ndlDecoMinutes * 60;
+      if (ttsMinutes > 0 && ttsMinutes < 0xFFFF) sample.ttsSeconds = ttsMinutes * 60;
     }
 
-    // CNS at offset 22+pnf (Petrel only, 0-100 raw = 0-100%)
+    // CNS
     if (petrel) {
       const cns = raw[offset + pnf + 22];
-      if (cns > 0 && cns < 255) {
-        sample.cnsPercent = cns;
-      }
+      if (cns > 0 && cns < 255) sample.cnsPercent = cns;
     }
 
-    // PPO2 for CCR at offset 6+pnf (1/100 bar)
+    // PPO2 + setpoint for CCR
     if (ccr) {
       const ppo2Raw = raw[offset + pnf + 6];
-      if (ppo2Raw > 0) {
-        sample.ppo2 = ppo2Raw / 100;
-      }
-      // Setpoint at offset 18+pnf (1/100 bar)
+      if (ppo2Raw > 0) sample.ppo2 = ppo2Raw / 100;
       if (petrel) {
         const setpoint = raw[offset + pnf + 18];
-        if (setpoint > 0) {
-          sample.setpoint = setpoint / 100;
-        }
+        if (setpoint > 0) sample.setpoint = setpoint / 100;
       }
     }
 
     samples.push(sample);
   }
 
-  // ===== Build output =====
-  const cylinders: DiveCylinder[] = (gasMixes.length > 0 ? gasMixes : [{ o2: 21, he: 0 }]).map((mix, index) => {
+  // ===== Extract environment data from opening records =====
+
+  // Units (OPENING_0 byte 8)
+  const units: 'metric' | 'imperial' = opening[0] != null && raw[opening[0] + 8] === 1 ? 'imperial' : 'metric';
+
+  // Atmospheric pressure (OPENING_1 bytes 16-17 PNF)
+  let atmosphericPressureMbar: number | undefined;
+  if (opening[1] != null) {
+    atmosphericPressureMbar = uint16BE(raw, opening[1] + (pnf ? 16 : 47));
+  }
+
+  // Water density (OPENING_3 bytes 3-4 PNF)
+  let salinityDensity: number | undefined;
+  let waterType: 'salt' | 'fresh' | undefined;
+  if (opening[3] != null) {
+    salinityDensity = uint16BE(raw, opening[3] + (pnf ? 3 : 83));
+    waterType = salinityDensity === 1000 ? 'fresh' : 'salt';
+  }
+
+  // Deco model + GF + VPM-B conservatism
+  let decoModel: string | undefined;
+  let gfLow: number | undefined;
+  let gfHigh: number | undefined;
+  let vpmbConservatism: number | undefined;
+  if (opening[2] != null && opening[0] != null) {
+    const decomodelIdx = pnf ? opening[2] + 18 : 67;
+    const gfIdx = pnf ? opening[0] + 4 : 4;
+    const modelByte = raw[decomodelIdx];
+    if (modelByte === GF) {
+      decoModel = 'Bühlmann ZHL-16C';
+      gfLow = raw[gfIdx];
+      gfHigh = raw[gfIdx + 1];
+    } else if (modelByte === VPMB || modelByte === VPMB_GFS) {
+      decoModel = modelByte === VPMB ? 'VPM-B' : 'VPM-B/GFS';
+      vpmbConservatism = raw[decomodelIdx + 1];
+    } else if (modelByte === DCIEM) {
+      decoModel = 'DCIEM';
+    }
+  }
+
+  // Closing block: max depth + duration
+  let closingMaxDepth = 0;
+  let closingDuration = 0;
+  if (closing[0] != null) {
+    const co = closing[0];
+    let maxDepthRaw = uint16BE(raw, co + 4);
+    if (units === 'imperial') {
+      closingMaxDepth = maxDepthRaw * FEET / (pnf ? 10 : 1);
+    } else {
+      closingMaxDepth = pnf ? maxDepthRaw / 10 : maxDepthRaw;
+    }
+    closingDuration = pnf
+      ? (raw[co + 6] << 16) | (raw[co + 7] << 8) | raw[co + 8]
+      : uint16BE(raw, co + 6) * 60;
+  }
+
+  // Model from final block
+  let modelFromDive = deviceInfo.modelId;
+  if (finalOffset != null && finalOffset + 14 <= raw.length) {
+    modelFromDive = raw[finalOffset + 13];
+  }
+  const modelName = DEVICE_MODELS[modelFromDive] ?? deviceInfo.model;
+
+  // Teric timezone
+  let timezoneOffset: number | undefined;
+  if (modelFromDive === TERIC && logVersion >= 9 && opening[5] != null) {
+    const utcOffsetMinutes = toSigned32BE(raw, opening[5] + 26);
+    const dst = raw[opening[5] + 30];
+    timezoneOffset = utcOffsetMinutes + dst * 60;
+  }
+
+  // GPS from OPENING_9
+  let site: DiveSiteInfo | undefined;
+  if (aiMode === AI_ON_GPS && opening[9] != null) {
+    const lat = toSigned32BE(raw, opening[9] + 21);
+    const lon = toSigned32BE(raw, opening[9] + 25);
+    if (!(lat === 0 && lon === 0) && !(lat === -1 && lon === -1)) {
+      site = { latitude: lat / 100000, longitude: lon / 100000 };
+    }
+  }
+  if (waterType && !site) {
+    site = { waterType };
+  } else if (waterType && site) {
+    site.waterType = waterType;
+  }
+
+  // ===== Build dive mode =====
+  const diveMode = mapDiveMode(headerDiveMode);
+
+  // ===== Filter gas mixes (matching libdivecomputer logic) =====
+  const filteredGases: ParsedGasSlot[] = [];
+  if (headerDiveMode !== M_FREEDIVE) {
+    for (const gas of gasSlots) {
+      if (gas.o2 === 0 && gas.he === 0) continue;
+      if (!gas.enabled && !gas.active) continue;
+      if (gas.diluent && !isCcrMode(headerDiveMode)) continue;
+      filteredGases.push(gas);
+    }
+  }
+
+  // ===== Build cylinders =====
+  const cylinders: DiveCylinder[] = (filteredGases.length > 0
+    ? filteredGases
+    : [{ slotIndex: 0, o2: 21, he: 0, diluent: false, enabled: true, active: true }]
+  ).map((gas, index) => {
+    const usage = gas.diluent ? 'diluent' as const : 'none' as const;
     const gasMix: DiveGasMix = {
-      oxygen: mix.o2 / 100,
-      helium: mix.he / 100,
-      nitrogen: Math.max(0, 1 - mix.o2 / 100 - mix.he / 100),
-      name: formatGasName(mix.o2, mix.he),
+      oxygen: gas.o2 / 100,
+      helium: gas.he / 100,
+      nitrogen: Math.max(0, 1 - gas.o2 / 100 - gas.he / 100),
+      name: formatGasName(gas.o2, gas.he),
+      usage,
+      enabled: gas.enabled,
+      slotIndex: gas.slotIndex,
     };
 
-    return {
+    const cyl: DiveCylinder = {
       index,
       gasMix,
       startPressureBar: startPressureByTank.get(index),
       endPressureBar: endPressureByTank.get(index),
     };
-  });
 
-  const startTime = new Date(manifestEntry.timestamp * 1000).toISOString();
-  const maxDepthMeters = sampleMaxDepth > 0 ? sampleMaxDepth : closingMaxDepth;
-  const durationSeconds = samples.length > 0
-    ? Math.round(samples[samples.length - 1].timeSeconds)
-    : closingDuration;
+    // Attach tank metadata if available (by positional mapping)
+    if (index < NTANKS && tanks[index].serial > 0) {
+      cyl.tankSerial = tanks[index].serial;
+    }
+    if (index < NTANKS && tanks[index].name) {
+      const name = tanks[index].name.trim();
+      if (name) {
+        cyl.tankName = name;
+        cyl.description = name;
+        // Determine tank usage from name
+        if (isCcrMode(headerDiveMode) && !hpccr) {
+          if (name.startsWith('O')) cyl.gasMix.usage = 'oxygen';
+          else if (name.startsWith('D')) cyl.gasMix.usage = 'diluent';
+        }
+      }
+    }
+    if (index < NTANKS && tanks[index].maxPressure > 0) {
+      cyl.maxPressureBar = psiToBar(tanks[index].maxPressure * 2);
+    }
+    if (index < NTANKS && tanks[index].reservePressure > 0) {
+      cyl.reservePressureBar = psiToBar(tanks[index].reservePressure * 2);
+    }
+    if (index < NTANKS) {
+      cyl.tankEnabled = tanks[index].enabled || tanks[index].active;
+    }
+
+    return cyl;
+  });
 
   // ===== Build pressure source metadata =====
   const pressureSources: PressureSource[] = [];
-  const channelLabels = ['T1', 'T2'];
   for (const [tankIndex, count] of sampleCountByTank) {
-    // Map tank channel to gas index:
-    // Shearwater T1 (offset 27) = primary gas = gas slot 0
-    // Shearwater T2 (offset 19) = secondary gas = gas slot 1
-    // This is a positional mapping — T1 always carries the first configured gas.
+    const tankLabel = tanks[tankIndex]?.name?.trim();
+    const channelLabel = tankLabel || `T${tankIndex + 1}`;
     const gasIndex = tankIndex < cylinders.length ? tankIndex : undefined;
     const gasName = gasIndex != null ? cylinders[gasIndex].gasMix.name : undefined;
     const confidence = gasIndex != null ? 'high' as const : 'unmapped' as const;
 
     pressureSources.push({
       tankIndex,
-      channelLabel: channelLabels[tankIndex] ?? `T${tankIndex + 1}`,
+      channelLabel,
       role: tankIndex === 0 ? 'primary' : 'secondary',
       gasIndex,
       gasName,
@@ -383,6 +686,12 @@ export function parseShearwaterDive(
     });
   }
 
+  const startTime = new Date(manifestEntry.timestamp * 1000).toISOString();
+  const maxDepthMeters = sampleMaxDepth > 0 ? sampleMaxDepth : closingMaxDepth;
+  const durationSeconds = samples.length > 0
+    ? Math.round(samples[samples.length - 1].timeSeconds)
+    : closingDuration;
+
   const rawDataHash = hashRawData(raw, deviceInfo.serial, manifestEntry.timestamp);
 
   return {
@@ -390,6 +699,7 @@ export function parseShearwaterDive(
     sourceFileName: `ble://${deviceInfo.serial}`,
     diveNumberInFile: manifestEntry.diveNumber,
     startTime,
+    timezoneOffset,
     durationSeconds,
     maxDepthMeters,
     meanDepthMeters: undefined,
@@ -397,7 +707,7 @@ export function parseShearwaterDive(
     minTemperatureCelsius: minTemp < 999 ? minTemp : undefined,
     maxTemperatureCelsius: maxTemp > -999 ? maxTemp : undefined,
     waterTemperatureCelsius: minTemp < 999 ? minTemp : undefined,
-    site: undefined,
+    site,
     computer: {
       manufacturer: 'Shearwater',
       model: modelName,
@@ -412,6 +722,10 @@ export function parseShearwaterDive(
     decoModel,
     gradientFactorLow: gfLow,
     gradientFactorHigh: gfHigh,
+    vpmbConservatism,
+    units,
+    salinityDensity,
+    atmosphericPressureBar: atmosphericPressureMbar != null ? atmosphericPressureMbar / 1000 : undefined,
     rawDataHash,
     parseWarnings:
       maxObservedPressureTank >= cylinders.length
@@ -421,56 +735,7 @@ export function parseShearwaterDive(
   };
 }
 
-/**
- * Parse gas mixes from opening records.
- */
-function parseGasMixes(
-  raw: Uint8Array,
-  pnf: number,
-  opening: (number | undefined)[]
-): { o2: number; he: number }[] {
-  const mixes: { o2: number; he: number }[] = [];
-
-  if (pnf) {
-    if (opening[0] == null) return mixes;
-    const o0 = opening[0];
-
-    const o2Values: number[] = [];
-    const heValues: number[] = [];
-
-    // OPENING_0: O2 at bytes 20-29, He at bytes 30-31
-    for (let i = 0; i < NFIXED; i++) {
-      o2Values.push(raw[o0 + 20 + i] || 0);
-    }
-    heValues.push(raw[o0 + 30] || 0);
-    heValues.push(raw[o0 + 31] || 0);
-
-    // OPENING_1: He at bytes 1-8 (mixes 2-9)
-    if (opening[1] != null) {
-      const o1 = opening[1];
-      for (let i = 0; i < 8; i++) {
-        heValues.push(raw[o1 + 1 + i] || 0);
-      }
-    }
-
-    for (let i = 0; i < NFIXED; i++) {
-      if (o2Values[i] > 0) {
-        mixes.push({ o2: o2Values[i], he: heValues[i] || 0 });
-      }
-    }
-  } else {
-    // Legacy: O2 at bytes 20-29, He at bytes 30-39
-    for (let i = 0; i < NFIXED; i++) {
-      const o2 = raw[20 + i];
-      const he = raw[30 + i];
-      if (o2 > 0) {
-        mixes.push({ o2, he });
-      }
-    }
-  }
-
-  return mixes;
-}
+// ===== Helpers =====
 
 function isAllZero(data: Uint8Array, offset: number, length: number): boolean {
   for (let i = 0; i < length; i++) {
@@ -479,12 +744,48 @@ function isAllZero(data: Uint8Array, offset: number, length: number): boolean {
   return true;
 }
 
+function uint16BE(data: Uint8Array, offset: number): number {
+  return (data[offset] << 8) | data[offset + 1];
+}
+
 function toSigned8(value: number): number {
   return value > 127 ? value - 256 : value;
 }
 
+function toSigned32BE(data: Uint8Array, offset: number): number {
+  const unsigned = (data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3];
+  return unsigned | 0; // Convert to signed 32-bit
+}
+
 function psiToBar(psi: number): number {
   return Math.round(psi * 0.0689476 * 10) / 10;
+}
+
+function bcd2dec(data: Uint8Array, offset: number, length: number): number {
+  let result = 0;
+  for (let i = 0; i < length; i++) {
+    const byte = data[offset + i];
+    result = result * 100 + ((byte >> 4) * 10) + (byte & 0x0F);
+  }
+  return result;
+}
+
+function decodeAscii2(data: Uint8Array, offset: number): string {
+  const c0 = data[offset];
+  const c1 = data[offset + 1];
+  let s = '';
+  if (c0 >= 0x20 && c0 <= 0x7e) s += String.fromCharCode(c0);
+  if (c1 >= 0x20 && c1 <= 0x7e) s += String.fromCharCode(c1);
+  return s;
+}
+
+function popcount(n: number): number {
+  let count = 0;
+  while (n) {
+    count += n & 1;
+    n >>>= 1;
+  }
+  return count;
 }
 
 function formatGasName(o2Pct: number, hePct: number): string {

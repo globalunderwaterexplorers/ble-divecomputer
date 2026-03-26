@@ -151,6 +151,9 @@ interface DiveGasMix {
     helium: number;
     nitrogen: number;
     name?: string;
+    usage?: 'none' | 'diluent' | 'oxygen' | 'sidemount';
+    enabled?: boolean;
+    slotIndex?: number;
 }
 /** Cylinder / tank configuration */
 interface DiveCylinder {
@@ -161,6 +164,11 @@ interface DiveCylinder {
     startPressureBar?: number;
     endPressureBar?: number;
     gasMix: DiveGasMix;
+    tankSerial?: number;
+    tankName?: string;
+    maxPressureBar?: number;
+    reservePressureBar?: number;
+    tankEnabled?: boolean;
 }
 /** Pressure source / transmitter channel metadata derived from dive data. */
 interface PressureSource {
@@ -254,6 +262,8 @@ interface ParsedDive {
     decoModel?: string;
     gradientFactorLow?: number;
     gradientFactorHigh?: number;
+    vpmbConservatism?: number;
+    units?: 'metric' | 'imperial';
     maxCnsPercent?: number;
     totalOtu?: number;
     decoStops?: Array<{
