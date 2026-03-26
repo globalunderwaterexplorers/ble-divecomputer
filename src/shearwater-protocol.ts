@@ -70,6 +70,7 @@ export class ShearwaterProtocol {
   private baseAddr = 0;
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   private transferActive = false;
+  private keepAliveFailures = 0;
 
   constructor(private ble: ShearwaterBle) {}
 
@@ -91,9 +92,12 @@ export class ShearwaterProtocol {
    * exiting its UDS diagnostic session during idle periods.
    * Uses ISO 14229 TesterPresent (0x3E) — the standard UDS session
    * keepalive — every 4 seconds.  Pauses during active data transfers.
+   * Stops automatically after 3 consecutive failures to avoid flooding
+   * the console with timeout warnings.
    */
   startKeepAlive(): void {
     this.stopKeepAlive();
+    this.keepAliveFailures = 0;
     const ping = async () => {
       // Check before AND after — pings queued in the mutex may outlive stopKeepAlive()
       if (!this.keepAliveTimer || this.transferActive || !this.ble.connected) return;
@@ -101,8 +105,14 @@ export class ShearwaterProtocol {
         // TesterPresent: [0x3E, 0x00] → response [0x7E, 0x00]
         // Short timeout (2s) so a failed ping doesn't block the mutex for long
         await this.ble.sendPacket(new Uint8Array([CMD_TESTER_PRESENT, 0x00]), 2_000);
+        this.keepAliveFailures = 0;
       } catch {
-        // Ignore — disconnect callback handles dead connections
+        this.keepAliveFailures++;
+        if (this.keepAliveFailures >= 3) {
+          _info('Keepalive stopped after 3 consecutive failures — device unresponsive');
+          this.stopKeepAlive();
+          return;
+        }
       }
     };
     // Fire one immediately, then every 4 seconds

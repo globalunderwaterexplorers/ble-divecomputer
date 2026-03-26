@@ -426,6 +426,7 @@ var ShearwaterProtocol = class {
     this.baseAddr = 0;
     this.keepAliveTimer = null;
     this.transferActive = false;
+    this.keepAliveFailures = 0;
   }
   /**
    * Some Shearwater devices need a brief pause after GATT connect before the
@@ -443,14 +444,24 @@ var ShearwaterProtocol = class {
    * exiting its UDS diagnostic session during idle periods.
    * Uses ISO 14229 TesterPresent (0x3E) — the standard UDS session
    * keepalive — every 4 seconds.  Pauses during active data transfers.
+   * Stops automatically after 3 consecutive failures to avoid flooding
+   * the console with timeout warnings.
    */
   startKeepAlive() {
     this.stopKeepAlive();
+    this.keepAliveFailures = 0;
     const ping = async () => {
       if (!this.keepAliveTimer || this.transferActive || !this.ble.connected) return;
       try {
         await this.ble.sendPacket(new Uint8Array([CMD_TESTER_PRESENT, 0]), 2e3);
+        this.keepAliveFailures = 0;
       } catch {
+        this.keepAliveFailures++;
+        if (this.keepAliveFailures >= 3) {
+          _info("Keepalive stopped after 3 consecutive failures \u2014 device unresponsive");
+          this.stopKeepAlive();
+          return;
+        }
       }
     };
     ping();

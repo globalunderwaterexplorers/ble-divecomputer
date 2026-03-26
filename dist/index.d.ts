@@ -297,6 +297,7 @@ declare class ShearwaterProtocol {
     private baseAddr;
     private keepAliveTimer;
     private transferActive;
+    private keepAliveFailures;
     constructor(ble: ShearwaterBle);
     /**
      * Some Shearwater devices need a brief pause after GATT connect before the
@@ -310,6 +311,8 @@ declare class ShearwaterProtocol {
      * exiting its UDS diagnostic session during idle periods.
      * Uses ISO 14229 TesterPresent (0x3E) — the standard UDS session
      * keepalive — every 4 seconds.  Pauses during active data transfers.
+     * Stops automatically after 3 consecutive failures to avoid flooding
+     * the console with timeout warnings.
      */
     startKeepAlive(): void;
     stopKeepAlive(): void;
