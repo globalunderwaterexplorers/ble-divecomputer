@@ -87,6 +87,36 @@ function buildPnfDive(): Uint8Array {
 }
 
 describe('parseShearwaterDive', () => {
+
+  // A bailout IS in the log: the computer flags the circuit on every sample,
+  // so the loop-then-open-circuit transition is recorded even though the
+  // dive-level mode can only name one circuit.
+  it('records the circuit per sample, so a bailout is visible', () => {
+    const raw = buildPnfDive();
+    const sample1 = RECORD_SIZE * 5;
+    const sample2 = RECORD_SIZE * 6;
+    raw[sample1 + 12] = 0x00; // closed circuit
+    raw[sample2 + 12] = 0x10; // OC_FLAG — bailed out
+
+    const parsed = parseShearwaterDive(raw, deviceInfo, manifestEntry);
+    expect(parsed.samples.map(sample => sample.circuit)).toEqual(['CC', 'OC']);
+    // The dive still reports CCR: it was a rebreather dive that bailed out.
+    expect(parsed.diveMode).toBe('CCR');
+  });
+
+  it('distinguishes semi-closed from closed circuit', () => {
+    const raw = buildPnfDive();
+    raw[RECORD_SIZE * 5 + 12] = 0x08; // SC_FLAG
+    raw[RECORD_SIZE * 6 + 12] = 0x08;
+
+    const parsed = parseShearwaterDive(raw, deviceInfo, manifestEntry);
+    expect(parsed.samples.every(sample => sample.circuit === 'SC')).toBe(true);
+  });
+
+  it('marks an all-open-circuit dive OC on every sample', () => {
+    const parsed = parseShearwaterDive(buildPnfDive(), deviceInfo, manifestEntry);
+    expect(parsed.samples.every(sample => sample.circuit === 'OC')).toBe(true);
+  });
   it('preserves multiple gas mixes and per-sample tank pressures', () => {
     const parsed = parseShearwaterDive(buildPnfDive(), deviceInfo, manifestEntry);
 

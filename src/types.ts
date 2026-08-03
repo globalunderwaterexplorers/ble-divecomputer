@@ -181,7 +181,16 @@ export interface DiveSample {
   rbtSeconds?: number | null;
   bearingDegrees?: number | null;
   tankPressures?: Array<{ tank: number; bar: number }> | null;
+  /**
+   * The circuit this sample was recorded on. The computer flags it per sample,
+   * so a dive that starts on the loop and finishes on bailout says so here —
+   * the dive-level mode can only name one of the two.
+   */
+  circuit?: DiveSampleCircuit | null;
 }
+
+/** Closed circuit · open circuit (bailout or an OC dive) · semi-closed. */
+export type DiveSampleCircuit = 'CC' | 'OC' | 'SC';
 
 /** Dive site / location */
 export interface DiveSiteInfo {
