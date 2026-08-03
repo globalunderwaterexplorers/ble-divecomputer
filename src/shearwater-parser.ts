@@ -1,5 +1,5 @@
 import type { ShearwaterDeviceInfo, ManifestEntry } from './types';
-import type { ParsedDive, DiveSample, DiveCylinder, DiveGasMix, DiveEvent, PressureSource, DiveSiteInfo } from './types';
+import type { ParsedDive, DiveSample, DiveSampleCircuit, DiveCylinder, DiveGasMix, DiveEvent, PressureSource, DiveSiteInfo } from './types';
 import { DEVICE_MODELS } from './constants';
 
 /**
@@ -409,6 +409,11 @@ export function parseShearwaterDive(
     // Status flags
     const status = recordType !== REC_AVELO_SAMPLE ? raw[offset + 11 + pnf] : 0;
     const ccr = (status & OC_FLAG) === 0 && recordType !== REC_AVELO_SAMPLE;
+    // The computer states the circuit on EVERY sample, so a bailout is in the
+    // log even though the dive-level mode can only name one circuit.
+    const sampleCircuit: DiveSampleCircuit | undefined = recordType === REC_AVELO_SAMPLE
+      ? undefined
+      : ccr ? ((status & SC_FLAG) ? 'SC' : 'CC') : 'OC';
 
     if (ccr && headerDiveMode === M_OC_TEC) {
       headerDiveMode = (status & SC_FLAG) ? M_SC : M_CC;
@@ -445,6 +450,7 @@ export function parseShearwaterDive(
       timeSeconds: currentTime,
       depthMeters,
       temperatureCelsius: temp !== 0 ? temp : undefined,
+      circuit: sampleCircuit,
     };
 
     // Tank pressure (logversion >= 7, Petrel class)
