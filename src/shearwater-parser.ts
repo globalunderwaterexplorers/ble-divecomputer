@@ -642,6 +642,12 @@ export function parseShearwaterDive(
     };
 
     // Attach tank metadata if available (by positional mapping)
+    // The header states usage the gas table cannot: HPCCR names tanks 4/5 as
+    // diluent and oxygen, and the GTR bitmap marks sidemount tanks. Both were
+    // decoded and then lost, because only the tank NAME was consulted below.
+    if (index < NTANKS && tanks[index].usage && tanks[index].usage !== 'none') {
+      cyl.gasMix.usage = tanks[index].usage;
+    }
     if (index < NTANKS && tanks[index].serial > 0) {
       cyl.tankSerial = tanks[index].serial;
     }

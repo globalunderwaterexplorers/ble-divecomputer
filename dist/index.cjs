@@ -1395,6 +1395,9 @@ function parseShearwaterDive(raw, deviceInfo, manifestEntry) {
       startPressureBar: startPressureByTank.get(index),
       endPressureBar: endPressureByTank.get(index)
     };
+    if (index < NTANKS && tanks[index].usage && tanks[index].usage !== "none") {
+      cyl.gasMix.usage = tanks[index].usage;
+    }
     if (index < NTANKS && tanks[index].serial > 0) {
       cyl.tankSerial = tanks[index].serial;
     }

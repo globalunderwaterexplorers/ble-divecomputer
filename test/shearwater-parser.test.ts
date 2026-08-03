@@ -88,6 +88,18 @@ function buildPnfDive(): Uint8Array {
 
 describe('parseShearwaterDive', () => {
 
+  // The GTR bitmap and HPCCR mode state usage the gas table cannot express.
+  it('carries sidemount usage from the GTR bitmap onto the cylinder', () => {
+    const raw = buildPnfDive();
+    const opening4 = RECORD_SIZE * 3;
+    raw[opening4 + 16] = 9;      // log version >= 7 so AI/GTR are read
+    raw[opening4 + 29] = 0b0011; // tanks 0 and 1 flagged sidemount
+
+    const parsed = parseShearwaterDive(raw, deviceInfo, manifestEntry);
+    expect(parsed.cylinders[0]?.gasMix.usage).toBe('sidemount');
+    expect(parsed.cylinders[1]?.gasMix.usage).toBe('sidemount');
+  });
+
   // A bailout IS in the log: the computer flags the circuit on every sample,
   // so the loop-then-open-circuit transition is recorded even though the
   // dive-level mode can only name one circuit.
