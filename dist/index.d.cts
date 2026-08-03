@@ -211,7 +211,15 @@ interface DiveSample {
         tank: number;
         bar: number;
     }> | null;
+    /**
+     * The circuit this sample was recorded on. The computer flags it per sample,
+     * so a dive that starts on the loop and finishes on bailout says so here —
+     * the dive-level mode can only name one of the two.
+     */
+    circuit?: DiveSampleCircuit | null;
 }
+/** Closed circuit · open circuit (bailout or an OC dive) · semi-closed. */
+type DiveSampleCircuit = 'CC' | 'OC' | 'SC';
 /** Dive site / location */
 interface DiveSiteInfo {
     name?: string;

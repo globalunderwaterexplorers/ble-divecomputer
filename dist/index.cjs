@@ -1216,6 +1216,7 @@ function parseShearwaterDive(raw, deviceInfo, manifestEntry) {
     }
     const status = recordType !== REC_AVELO_SAMPLE ? raw[offset + 11 + pnf] : 0;
     const ccr = (status & OC_FLAG) === 0 && recordType !== REC_AVELO_SAMPLE;
+    const sampleCircuit = recordType === REC_AVELO_SAMPLE ? void 0 : ccr ? status & SC_FLAG ? "SC" : "CC" : "OC";
     if (ccr && headerDiveMode === M_OC_TEC) {
       headerDiveMode = status & SC_FLAG ? M_SC : M_CC;
     }
@@ -1243,7 +1244,8 @@ function parseShearwaterDive(raw, deviceInfo, manifestEntry) {
     const sample = {
       timeSeconds: currentTime,
       depthMeters,
-      temperatureCelsius: temp !== 0 ? temp : void 0
+      temperatureCelsius: temp !== 0 ? temp : void 0,
+      circuit: sampleCircuit
     };
     if (logVersion >= 7 && petrel) {
       const pressureOffsets = [27, 19];
